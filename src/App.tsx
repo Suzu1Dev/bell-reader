@@ -106,8 +106,8 @@ function parseRoute(hash: string): Route {
 
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">(() => {
-    const saved = localStorage.getItem("bell.reader.theme");
-    return saved === "light" ? "light" : "dark";
+    const saved = localStorage.getItem("bell.reader.theme.v2");
+    return saved === "dark" ? "dark" : "light";
   });
   const [readingFont, setReadingFont] = useState<"sans" | "serif">(() => {
     const saved = localStorage.getItem("bell.reader.font");
@@ -168,7 +168,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("bell.reader.theme", theme);
+    localStorage.setItem("bell.reader.theme.v2", theme);
   }, [theme]);
 
   useEffect(() => {
@@ -473,33 +473,37 @@ export default function App() {
   const renderPageCard = (p: SavedPageSummary) => {
     const folder = folders.find((f) => f.id === p.folderId);
     return (
-      <a key={p.id} href={`#/page/${encodeURIComponent(p.id)}`} className="page-card">
-        <div className="page-card-meta">
-          <span className="topic-pill">
-            <bdi>{p.topic}</bdi>
-          </span>
-          {folder ? (
-            <span className="folder-chip">
-              <span className={`folder-dot dot-${folder.color}`} />
-              <bdi>{folder.name}</bdi>
+      <a key={p.id} href={`#/page/${encodeURIComponent(p.id)}`} className="article-index-row">
+        <div className="article-index-main">
+          <div className="article-index-kicker">
+            <span className="index-topic">
+              <bdi>{p.topic}</bdi>
             </span>
-          ) : null}
+            {folder ? (
+              <span className="index-folder">
+                <span className={`folder-dot dot-${folder.color}`} />
+                <bdi>{folder.name}</bdi>
+              </span>
+            ) : null}
+            {p.siteName ? (
+              <span className="index-site">
+                <Globe size={11} aria-hidden="true" />
+                <span>{p.siteName}</span>
+              </span>
+            ) : null}
+          </div>
+          <h3>
+            <bdi>{p.title}</bdi>
+          </h3>
+          <p>
+            <bdi>{p.summary || p.excerpt}</bdi>
+          </p>
+        </div>
+        <div className="article-index-aside">
           <span className={`ann-count-badge ${p.annotationCount > 0 ? "has-ink" : ""}`}>
             {p.annotationCount > 0 ? `${p.annotationCount} 則筆跡` : "待標註"}
           </span>
         </div>
-        <h3>
-          <bdi>{p.title}</bdi>
-        </h3>
-        <p>
-          <bdi>{p.summary || p.excerpt}</bdi>
-        </p>
-        {p.siteName ? (
-          <div className="page-card-foot">
-            <Globe size={11} aria-hidden="true" />
-            <span>{p.siteName}</span>
-          </div>
-        ) : null}
       </a>
     );
   };
@@ -735,14 +739,11 @@ export default function App() {
             <section className="composer-card">
               <div className="composer-header">
                 <div>
-                  <span className="composer-eyebrow">
-                    <Sparkles size={12} aria-hidden="true" />
-                    <span>手繪螢光筆閱讀室 · 永久保存不重跑 Token</span>
-                  </span>
+                  <span className="composer-kicker">閱讀書桌 · 永久保存與原位批註</span>
                   <h1>
                     {handoffDraft
                       ? `來自 ${APP_NAMES[handoffDraft.from]}`
-                      : "輸入網址或貼上內容，開始塗鴉伴讀"}
+                      : "貼上網址或文章內容"}
                   </h1>
                   {handoffDraft?.truncated ? (
                     <p className="composer-sub">內容過長，已截斷為前 2,000 字</p>
@@ -838,7 +839,7 @@ export default function App() {
                     查看全部（{pages.length}）
                   </a>
                 </div>
-                <div className="page-grid">{pages.slice(0, 6).map(renderPageCard)}</div>
+                <div className="article-index">{pages.slice(0, 6).map(renderPageCard)}</div>
               </section>
             ) : null}
           </div>
@@ -871,7 +872,7 @@ export default function App() {
                 </a>
               </div>
             ) : (
-              <div className="page-grid">{filteredPages.map(renderPageCard)}</div>
+              <div className="article-index">{filteredPages.map(renderPageCard)}</div>
             )}
           </div>
         )}
