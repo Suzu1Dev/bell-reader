@@ -26,8 +26,11 @@ interface MeasuredAnchor {
   blockKind: ReaderBlock["kind"];
   rects: BoxRect[];
   bounds: BoxRect;
-  lastRect: BoxRect;
   firstRect: BoxRect;
+  lastRect: BoxRect;
+  blockTextRight: number;
+  blockBottom: number;
+  blockIsSingleLine: boolean;
 }
 
 interface PlacedNoteMeta {
@@ -262,7 +265,7 @@ function arrowEndpoints(
   mode: NotePlacement,
   noteBox: BoxRect,
 ): { ax: number; ay: number; nx: number; ny: number } {
-  const { bounds, firstRect, lastRect, annotation } = anchor;
+  const { bounds, lastRect, annotation } = anchor;
 
   if (mode === "inline-blank") {
     return {
@@ -282,17 +285,19 @@ function arrowEndpoints(
   }
 
   if (mode === "left-margin") {
+    const leftmost = anchor.rects.reduce((a, b) => (a.left < b.left ? a : b));
     return {
-      ax: firstRect.left - 4,
-      ay: firstRect.top + firstRect.height * 0.55,
+      ax: leftmost.left - 4,
+      ay: leftmost.top + leftmost.height * 0.55,
       nx: noteBox.left + noteBox.width + 6,
       ny: noteBox.top + Math.min(18, noteBox.height * 0.4),
     };
   }
 
   // right-margin
-  const startX = annotation.style === "bracket" ? bounds.left + bounds.width + 12 : lastRect.left + lastRect.width + 5;
-  const startY = annotation.style === "bracket" ? bounds.top + bounds.height * 0.5 : lastRect.top + lastRect.height * 0.55;
+  const rightmost = anchor.rects.reduce((a, b) => (a.left + a.width > b.left + b.width ? a : b));
+  const startX = annotation.style === "bracket" ? bounds.left + bounds.width + 12 : rightmost.left + rightmost.width + 5;
+  const startY = annotation.style === "bracket" ? bounds.top + bounds.height * 0.5 : rightmost.top + rightmost.height * 0.55;
   return {
     ax: startX,
     ay: startY,
@@ -333,15 +338,12 @@ export default function InkStage({
 }) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const paperRef = useRef<HTMLElement | null>(null);
-  const leftLaneRef = useRef<HTMLDivElement | null>(null);
-  const rightLaneRef = useRef<HTMLDivElement | null>(null);
   const blockRefs = useRef<Map<string, HTMLElement>>(new Map());
   const noteRefs = useRef<Map<string, HTMLElement>>(new Map());
-  const measureSigRef = useRef<string>("");
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isDesktopRail, setIsDesktopRail] = useState<boolean>(() =>
-    typeof window !== "undefined" ? window.innerWidth >= 1060 : true,
+    typeof window !== "undefined" ? window.innerWidth >= 1020 : true,
   );
   const [measured, setMeasured] = useState<MeasuredAnchor[]>([]);
   const [paperSpan, setPaperSpan] = useState<{ left: number; width: number }>({ left: 210, width: 620 });
@@ -376,13 +378,40 @@ export default function InkStage({
     const paperEl = paperRef.current;
     if (!stageEl || !paperEl) return;
 
-    const desktop = window.innerWidth >= 1060;
+    const desktop = window.innerWidth >= 1020;
     setIsDesktopRail(desktop);
 
     const stageRect = stageEl.getBoundingClientRect();
     const paperRect = paperEl.getBoundingClientRect();
     const pLeft = paperRect.left - stageRect.left;
     const pWidth = paperRect.width;
+
+    // Measure full text geometry of each block once so inline placement never overlaps wrapped text.
+    const blockGeom = new Map<string, { textRight: number; bottom: number; singleLine: boolean }>();
+    for (const [bId, bEl] of blockRefs.current.entries()) {
+      const br = bEl.getBoundingClientRect();
+      let textRight = br.right - stageRect.left;
+      let singleLine = br.height <= 42;
+      try {
+        const fullRange = document.createRange();
+        fullRange.selectNodeContents(bEl);
+        const fullRects = Array.from(fullRange.getClientRects()).filter((r) => r.width > 0.5 && r.height > 0.5);
+        if (fullRects.length > 0) {
+          textRight = Math.max(...fullRects.map((r) => r.right - stageRect.left));
+          const minTop = Math.min(...fullRects.map((r) => r.top));
+          const maxBottom = Math.max(...fullRects.map((r) => r.bottom));
+          const firstH = fullRects[0].height || 24;
+          singleLine = maxBottom - minTop <= firstH * 1.45;
+        }
+      } catch {
+        // Fallback to element box
+      }
+      blockGeom.set(bId, {
+        textRight,
+        bottom: br.bottom - stageRect.top,
+        singleLine,
+      });
+    }
 
     const nextMeasured: MeasuredAnchor[] = [];
     for (const ann of page.annotations) {
@@ -411,6 +440,7 @@ export default function InkStage({
         height: r.height,
       }));
       const bounds = unionRects(rects);
+      const bg = blockGeom.get(ann.blockId);
       nextMeasured.push({
         annotation: ann,
         blockKind: blockKindById.get(ann.blockId) ?? "paragraph",
@@ -418,6 +448,9 @@ export default function InkStage({
         bounds,
         firstRect: rects[0],
         lastRect: rects[rects.length - 1],
+        blockTextRight: bg?.textRight ?? bounds.left + bounds.width,
+        blockBottom: bg?.bottom ?? bounds.top + bounds.height,
+        blockIsSingleLine: bg?.singleLine ?? false,
       });
     }
 
@@ -438,14 +471,12 @@ export default function InkStage({
 
     const nextWidth = Math.max(stageEl.scrollWidth, stageRect.width);
     const nextHeight = Math.max(stageEl.scrollHeight, stageRect.height);
-    const sig = `${desktop}|${Math.round(pLeft)}|${Math.round(pWidth)}|${Math.round(nextWidth)}|${Math.round(nextHeight)}|${nextMeasured.length}|${Object.keys(boxes).length}|${Object.values(boxes).map((b) => `${Math.round(b.left)},${Math.round(b.top)}`).join(";")}`;
 
     setPaperSpan({ left: pLeft, width: pWidth });
     setMeasured(nextMeasured);
     setNoteHeights(heights);
     setNoteBoxes(boxes);
     setStageSize({ width: nextWidth, height: nextHeight });
-    measureSigRef.current = sig;
   }, [page.annotations, blockKindById]);
 
   useLayoutEffect(() => {
@@ -478,16 +509,15 @@ export default function InkStage({
     };
   }, [recomputeGeometry]);
 
-  // Decide placement for each measured annotation:
-  // 1) inline-blank: short lines/headings with >= 180px free whitespace to the right inside the paper column
-  // 2) under-block: first eligible annotation of a block sits in-flow right below that block near the highlighted quote
-  // 3) left-margin / right-margin: remaining annotations hug close to whichever side the marked text leans toward
+  // Collision-free placement:
+  // 1) inline-blank: ONLY beside verified single-line headings/list items whose full text ends >=215px before paperRight
+  // 2) under-block: in-flow directly below the block when the quote lies near the bottom of that block (no arrow crossing prose)
+  // 3) left-margin / right-margin: dedicated outer margin lanes completely separate from the prose column
   const placementMap = useMemo(() => {
     const result = new Map<string, PlacedNoteMeta>();
     if (!isDesktopRail || !showInk) return result;
 
     const paperRight = paperSpan.left + paperSpan.width;
-    const paperMid = paperSpan.left + paperSpan.width * 0.46;
     const inlineOccupiedBands: Array<{ top: number; bottom: number }> = [];
     const underBlockUsed = new Set<string>();
     const leftSlots: Array<{ id: string; desiredTop: number; height: number }> = [];
@@ -498,17 +528,16 @@ export default function InkStage({
     for (const m of ordered) {
       const id = m.annotation.id;
       const noteH = noteHeights[id] ?? 68;
-      const rightGap = paperRight - (m.lastRect.left + m.lastRect.width);
-      const isShortBlock = m.blockKind === "heading" || m.blockKind === "list";
+      const isShortHeadingOrItem = m.blockKind === "heading" || m.blockKind === "list";
+      const rightGapAfterBlock = paperRight - m.blockTextRight;
 
-      // Check inline blank space inside the paper column (beside headings, list items, or short ending lines)
-      if ((isShortBlock && rightGap >= 165) || rightGap >= 205) {
-        const candTop = Math.max(4, m.lastRect.top - 4);
+      if (isShortHeadingOrItem && m.blockIsSingleLine && rightGapAfterBlock >= 215 && noteH <= 58) {
+        const candTop = Math.max(4, m.bounds.top - 4);
         const candBottom = candTop + noteH;
-        const collides = inlineOccupiedBands.some((b) => candTop < b.bottom + 8 && candBottom > b.top - 8);
-        if (!collides) {
-          const noteLeft = m.lastRect.left + m.lastRect.width + 24;
-          const availW = Math.max(150, paperRight - noteLeft);
+        const collides = inlineOccupiedBands.some((b) => candTop < b.bottom + 10 && candBottom > b.top - 10);
+        if (!collides && candBottom <= m.blockBottom + 18) {
+          const noteLeft = m.blockTextRight + 26;
+          const availW = Math.max(170, paperRight - noteLeft);
           inlineOccupiedBands.push({ top: candTop, bottom: candBottom });
           result.set(id, {
             mode: "inline-blank",
@@ -520,10 +549,15 @@ export default function InkStage({
         }
       }
 
-      // First non-inline annotation for a paragraph/quote/code block sits close underneath that block
-      if (!underBlockUsed.has(m.annotation.blockId) && m.annotation.style !== "bracket") {
+      const quoteBottom = m.lastRect.top + m.lastRect.height;
+      const nearBottomOfBlock = m.blockBottom - quoteBottom <= 24;
+      if (
+        !underBlockUsed.has(m.annotation.blockId) &&
+        m.annotation.style !== "bracket" &&
+        (nearBottomOfBlock || m.blockIsSingleLine)
+      ) {
         underBlockUsed.add(m.annotation.blockId);
-        const relOffset = clamp(m.bounds.left - paperSpan.left - 8, 0, Math.max(0, paperSpan.width - 280));
+        const relOffset = clamp(m.bounds.left - paperSpan.left, 0, Math.max(0, paperSpan.width - 320));
         result.set(id, {
           mode: "under-block",
           top: m.bounds.top,
@@ -532,19 +566,22 @@ export default function InkStage({
         continue;
       }
 
-      // Balance margins: left half of column -> close left margin; right half / brackets -> close right margin
-      const centerX = m.bounds.left + m.bounds.width / 2;
-      if (centerX < paperMid && m.annotation.style !== "bracket") {
-        leftSlots.push({ id, desiredTop: Math.max(4, m.bounds.top - 4), height: noteH });
+      // Route to whichever side margin the annotated span actually borders closest (prevents arrows crossing prose)
+      const leftmostRect = m.rects.reduce((a, b) => (a.left < b.left ? a : b));
+      const rightmostRect = m.rects.reduce((a, b) => (a.left + a.width > b.left + b.width ? a : b));
+      const leftEdgeDist = leftmostRect.left - paperSpan.left;
+      const rightEdgeDist = paperRight - (rightmostRect.left + rightmostRect.width);
+      if (leftEdgeDist <= rightEdgeDist && m.annotation.style !== "bracket") {
+        leftSlots.push({ id, desiredTop: Math.max(4, leftmostRect.top - 6), height: noteH });
       } else {
-        rightSlots.push({ id, desiredTop: Math.max(4, m.bounds.top - 4), height: noteH });
+        rightSlots.push({ id, desiredTop: Math.max(4, rightmostRect.top - 6), height: noteH });
       }
     }
 
-    for (const pos of layoutMarginNotes(leftSlots, 14)) {
+    for (const pos of layoutMarginNotes(leftSlots, 16)) {
       result.set(pos.id, { mode: "left-margin", top: pos.top });
     }
-    for (const pos of layoutMarginNotes(rightSlots, 14)) {
+    for (const pos of layoutMarginNotes(rightSlots, 16)) {
       result.set(pos.id, { mode: "right-margin", top: pos.top });
     }
     return result;
@@ -632,7 +669,13 @@ export default function InkStage({
     } else if (block.kind === "image" && block.imageUrl) {
       element = (
         <figure className="reader-figure">
-          <img src={block.imageUrl} alt={block.alt || ""} loading="lazy" referrerPolicy="no-referrer" />
+          <img
+            src={block.imageUrl}
+            alt={block.alt || ""}
+            decoding="async"
+            referrerPolicy="no-referrer"
+            onLoad={() => recomputeGeometry()}
+          />
           {block.alt ? <figcaption>{block.alt}</figcaption> : null}
         </figure>
       );
@@ -910,7 +953,6 @@ export default function InkStage({
 
       {isDesktopRail ? (
         <div
-          ref={leftLaneRef}
           className="margin-lane margin-lane-left"
           style={{ minHeight: `${Math.max(200, railMinHeight)}px` }}
         >
@@ -949,7 +991,6 @@ export default function InkStage({
 
       {isDesktopRail ? (
         <div
-          ref={rightLaneRef}
           className="margin-lane margin-lane-right"
           style={{ minHeight: `${Math.max(200, railMinHeight)}px` }}
         >

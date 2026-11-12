@@ -71,10 +71,10 @@
 /* ── Light Mode (Default Archival Paper) ─────────────────────────────────── */
 :root, [data-theme="light"] {
   color-scheme: light;
-  --chrome: #F4F2EC;
-  --panel: #FAF9F5;
+  --chrome: #F6F5F1;
+  --panel: #FAF9F6;
   --raised: #FFFFFF;
-  --raised-2: #EFECE4;
+  --raised-2: #F0EEE8;
   --overlay: rgba(255, 255, 255, .97);
 
   --text: #18181B;
@@ -100,14 +100,14 @@
   --explain-text: var(--violet-700);
   --explain-tint: rgba(91, 69, 224, .09);
 
-  --reader: #1D4ED8;
-  --reader-text: #1E40AF;
+  --reader: #18181B;
+  --reader-text: #1D4ED8;
   --reader-on: #FFFFFF;
-  --reader-tint: rgba(29, 78, 216, .08);
+  --reader-tint: rgba(24, 24, 27, .06);
 
   --paper-sheet: #FFFFFF;
-  --paper-sheet-border: rgba(24, 24, 27, .11);
-  --paper-shadow: 0 1px 3px rgba(24, 24, 27, .04);
+  --paper-sheet-border: rgba(24, 24, 27, .08);
+  --paper-shadow: 0 1px 2px rgba(24, 24, 27, .03);
   --highlighter-blend: multiply;
 
   --danger: var(--red-600);

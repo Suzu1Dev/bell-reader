@@ -4,7 +4,6 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowLeft,
   AudioLines,
-  BookOpen,
   CheckSquare,
   ChevronDown,
   ExternalLink,
@@ -15,9 +14,8 @@ import {
   FolderPlus,
   Globe,
   Highlighter,
-  Layers,
-  Menu,
   Moon,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Settings,
@@ -114,7 +112,7 @@ export default function App() {
     return saved === "serif" ? "serif" : "sans";
   });
   const [hash, setHash] = useState<string>(() => window.location.hash || "#/");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [scrollProgress, setScrollProgress] = useState(0);
@@ -176,9 +174,23 @@ export default function App() {
   }, [readingFont]);
 
   useEffect(() => {
+    if (!moreMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMoreMenuOpen(false);
+    };
+    const onClick = () => setMoreMenuOpen(false);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("click", onClick);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("click", onClick);
+    };
+  }, [moreMenuOpen]);
+
+  useEffect(() => {
     const onHash = () => {
       setHash(window.location.hash || "#/");
-      setSidebarOpen(false);
+      setMoreMenuOpen(false);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -526,170 +538,8 @@ export default function App() {
         onRetry={loadManifest}
       />
 
-      {sidebarOpen ? (
-        <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
-      ) : null}
-
-      <aside className={`app-sidebar ${sidebarOpen ? "is-open" : ""}`}>
-        <div className="sidebar-top">
-          <button
-            type="button"
-            className="suite-brand-btn"
-            aria-label="切換 BELL 產品"
-            onClick={() => setSwitcherOpen(true)}
-          >
-            <span className="brand-tile" aria-hidden="true">
-              <Highlighter size={15} />
-            </span>
-            <span className="brand-wordmark">
-              <b>BELL</b> Web Reader
-            </span>
-            <ChevronDown size={14} className="brand-chevron" aria-hidden="true" />
-          </button>
-          <a href="#/" className="new-page-btn" title="新增閱讀頁面">
-            <Plus size={15} aria-hidden="true" />
-            <span>新增</span>
-          </a>
-        </div>
-
-        <nav className="sidebar-nav" aria-label="書庫導覽">
-          <a
-            href="#/"
-            className={`nav-row ${route.kind === "home" || route.kind === "handoff" ? "is-active" : ""}`}
-          >
-            <BookOpen size={15} aria-hidden="true" />
-            <span>開啟網頁／內容</span>
-          </a>
-          <a
-            href="#/library"
-            className={`nav-row ${route.kind === "library" && !route.folderId ? "is-active" : ""}`}
-          >
-            <Layers size={15} aria-hidden="true" />
-            <span>全部保存頁面</span>
-            <span className="nav-count">{pages.length}</span>
-          </a>
-          <a
-            href="#/topics"
-            className={`nav-row ${route.kind === "topics" ? "is-active" : ""}`}
-          >
-            <Tag size={15} aria-hidden="true" />
-            <span>主題與 Explain 連通</span>
-            <span className="nav-count">{topicGroups.filter(([k]) => k !== "未分類").length}</span>
-          </a>
-
-          <div className="sidebar-section-head">
-            <span>資料夾</span>
-            <button
-              type="button"
-              className="icon-ghost-btn"
-              aria-label="新增資料夾"
-              title="新增資料夾"
-              onClick={() => setNewFolderOpen((v) => !v)}
-            >
-              <FolderPlus size={14} aria-hidden="true" />
-            </button>
-          </div>
-
-          {newFolderOpen ? (
-            <form className="new-folder-form" onSubmit={handleCreateFolder}>
-              <input
-                type="text"
-                value={newFolderName}
-                onChange={(e) => setNewFolderName(e.target.value)}
-                placeholder="資料夾名稱…"
-                aria-label="資料夾名稱"
-                maxLength={40}
-                autoFocus
-              />
-              <div className="new-folder-actions">
-                <div className="folder-color-row">
-                  {INK_COLORS.map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      className={`pen-color-dot dot-${c} ${newFolderColor === c ? "is-selected" : ""}`}
-                      aria-label={c}
-                      onClick={() => setNewFolderColor(c)}
-                    />
-                  ))}
-                </div>
-                <button type="submit" className="btn-xs-primary">
-                  建立
-                </button>
-              </div>
-            </form>
-          ) : null}
-
-          <a
-            href="#/folder/__unfiled__"
-            className={`nav-row ${route.kind === "library" && route.folderId === "__unfiled__" ? "is-active" : ""}`}
-          >
-            <FolderIcon size={14} aria-hidden="true" />
-            <span>未歸檔</span>
-            <span className="nav-count">{pages.filter((p) => !p.folderId).length}</span>
-          </a>
-
-          {folders.map((folder) => {
-            const active = route.kind === "library" && route.folderId === folder.id;
-            return (
-              <div key={folder.id} className={`nav-row folder-row ${active ? "is-active" : ""}`}>
-                <a href={`#/folder/${encodeURIComponent(folder.id)}`} className="folder-row-link">
-                  <span className={`folder-dot dot-${folder.color}`} aria-hidden="true" />
-                  <span className="folder-name">
-                    <bdi>{folder.name}</bdi>
-                  </span>
-                  <span className="nav-count">{folder.pageCount}</span>
-                </a>
-                <button
-                  type="button"
-                  className="folder-del-btn"
-                  aria-label={`刪除資料夾 ${folder.name}`}
-                  title="刪除資料夾（保留頁面）"
-                  onClick={async () => {
-                    await apiWrite("DELETE", `/api/folders/${encodeURIComponent(folder.id)}`);
-                    await loadLibrary();
-                    if (active) window.location.hash = "#/library";
-                  }}
-                >
-                  <X size={12} aria-hidden="true" />
-                </button>
-              </div>
-            );
-          })}
-        </nav>
-
-        <div className="sidebar-footer">
-          <button
-            type="button"
-            className="icon-ghost-btn"
-            aria-label={theme === "dark" ? "切換亮色模式" : "切換暗色模式"}
-            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-          >
-            {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
-            <span>{theme === "dark" ? "亮色紙張" : "暗色畫室"}</span>
-          </button>
-          <button
-            type="button"
-            className="icon-ghost-btn"
-            aria-label="模型與歸檔設定"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <Settings size={15} />
-            <span>設定</span>
-          </button>
-        </div>
-      </aside>
-
-      <main className="app-main">
-        <header className="mobile-bar">
-          <button
-            type="button"
-            className="icon-ghost-btn"
-            aria-label="開啟選單"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <Menu size={18} />
-          </button>
+      <header className="app-topbar">
+        <div className="topbar-left">
           <button
             type="button"
             className="suite-brand-btn"
@@ -704,10 +554,60 @@ export default function App() {
             </span>
             <ChevronDown size={13} className="brand-chevron" aria-hidden="true" />
           </button>
-          <a href="#/" className="icon-ghost-btn" aria-label="新增頁面">
-            <Plus size={18} />
-          </a>
-        </header>
+
+          <nav className="topbar-nav" aria-label="主要導覽">
+            {route.kind === "page" ? (
+              <a href="#/library" className="topbar-link is-back">
+                <ArrowLeft size={14} aria-hidden="true" />
+                <span>書庫</span>
+              </a>
+            ) : null}
+            <a
+              href="#/"
+              className={`topbar-link ${route.kind === "home" || route.kind === "handoff" ? "is-active" : ""}`}
+            >
+              <Plus size={13} aria-hidden="true" />
+              <span>新增</span>
+            </a>
+            <a
+              href="#/library"
+              className={`topbar-link ${route.kind === "library" ? "is-active" : ""}`}
+            >
+              <span>書庫</span>
+              <span className="topbar-count">{pages.length}</span>
+            </a>
+            <a
+              href="#/topics"
+              className={`topbar-link ${route.kind === "topics" ? "is-active" : ""}`}
+            >
+              <span>主題</span>
+            </a>
+          </nav>
+        </div>
+
+        <div className="topbar-right">
+          <button
+            type="button"
+            className="icon-ghost-btn"
+            aria-label={theme === "dark" ? "切換亮色紙張" : "切換暗色畫室"}
+            title={theme === "dark" ? "切換亮色紙張" : "切換暗色畫室"}
+            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+          >
+            {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
+          <button
+            type="button"
+            className="icon-ghost-btn"
+            aria-label="模型與歸檔設定"
+            title="設定"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings size={15} />
+          </button>
+        </div>
+      </header>
+
+      <main className="app-main">
 
         {notice ? (
           <div className={`status-banner is-${notice.kind}`} role="status">
@@ -846,14 +746,14 @@ export default function App() {
         )}
 
         {route.kind === "library" && (
-          <div className="workspace-container">
+          <div className="workspace-container is-wide">
             <div className="library-header">
               <h1>
                 {route.folderId === "__unfiled__"
-                  ? "未歸檔頁面"
+                  ? "未歸檔"
                   : route.folderId
                     ? folders.find((f) => f.id === route.folderId)?.name || "資料夾"
-                    : "全部保存頁面"}
+                    : "閱讀書庫"}
               </h1>
               <input
                 type="search"
@@ -864,16 +764,108 @@ export default function App() {
                 aria-label="搜尋保存頁面"
               />
             </div>
-            {filteredPages.length === 0 ? (
-              <div className="empty-box">
-                <p>沒有符合的保存頁面。</p>
-                <a href="#/" className="btn-primary">
-                  新增頁面
+
+            <div className="library-layout">
+              <aside className="library-folders-rail" aria-label="資料夾分類">
+                <div className="rail-head">
+                  <span>資料夾</span>
+                  <button
+                    type="button"
+                    className="icon-ghost-btn"
+                    aria-label="新增資料夾"
+                    title="新增資料夾"
+                    onClick={() => setNewFolderOpen((v) => !v)}
+                  >
+                    <FolderPlus size={14} aria-hidden="true" />
+                  </button>
+                </div>
+
+                {newFolderOpen ? (
+                  <form className="new-folder-form" onSubmit={handleCreateFolder}>
+                    <input
+                      type="text"
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      placeholder="資料夾名稱…"
+                      aria-label="資料夾名稱"
+                      maxLength={40}
+                      autoFocus
+                    />
+                    <div className="new-folder-actions">
+                      <div className="folder-color-row">
+                        {INK_COLORS.map((c) => (
+                          <button
+                            key={c}
+                            type="button"
+                            className={`pen-color-dot dot-${c} ${newFolderColor === c ? "is-selected" : ""}`}
+                            aria-label={c}
+                            onClick={() => setNewFolderColor(c)}
+                          />
+                        ))}
+                      </div>
+                      <button type="submit" className="btn-xs-primary">
+                        建立
+                      </button>
+                    </div>
+                  </form>
+                ) : null}
+
+                <a
+                  href="#/library"
+                  className={`nav-row ${!route.folderId ? "is-active" : ""}`}
+                >
+                  <span>全部頁面</span>
+                  <span className="nav-count">{pages.length}</span>
                 </a>
+                <a
+                  href="#/folder/__unfiled__"
+                  className={`nav-row ${route.folderId === "__unfiled__" ? "is-active" : ""}`}
+                >
+                  <span>未歸檔</span>
+                  <span className="nav-count">{pages.filter((p) => !p.folderId).length}</span>
+                </a>
+                {folders.map((folder) => {
+                  const active = route.folderId === folder.id;
+                  return (
+                    <div key={folder.id} className={`nav-row folder-row ${active ? "is-active" : ""}`}>
+                      <a href={`#/folder/${encodeURIComponent(folder.id)}`} className="folder-row-link">
+                        <span className={`folder-dot dot-${folder.color}`} aria-hidden="true" />
+                        <span className="folder-name">
+                          <bdi>{folder.name}</bdi>
+                        </span>
+                        <span className="nav-count">{folder.pageCount}</span>
+                      </a>
+                      <button
+                        type="button"
+                        className="folder-del-btn"
+                        aria-label={`刪除資料夾 ${folder.name}`}
+                        title="刪除資料夾（保留頁面）"
+                        onClick={async () => {
+                          await apiWrite("DELETE", `/api/folders/${encodeURIComponent(folder.id)}`);
+                          await loadLibrary();
+                          if (active) window.location.hash = "#/library";
+                        }}
+                      >
+                        <X size={12} aria-hidden="true" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </aside>
+
+              <div className="library-list-col">
+                {filteredPages.length === 0 ? (
+                  <div className="empty-box">
+                    <p>目前沒有符合條件的頁面。</p>
+                    <a href="#/" className="btn-primary">
+                      新增頁面
+                    </a>
+                  </div>
+                ) : (
+                  <div className="article-index">{filteredPages.map(renderPageCard)}</div>
+                )}
               </div>
-            ) : (
-              <div className="article-index">{filteredPages.map(renderPageCard)}</div>
-            )}
+            </div>
           </div>
         )}
 
@@ -974,9 +966,6 @@ export default function App() {
               <>
                 <div className="reader-toolbar">
                   <div className="reader-toolbar-left">
-                    <a href="#/library" className="icon-ghost-btn" aria-label="返回書庫">
-                      <ArrowLeft size={15} />
-                    </a>
                     <label className="folder-select-wrap is-compact">
                       <FolderIcon size={13} aria-hidden="true" />
                       <select
@@ -1001,90 +990,124 @@ export default function App() {
                         ))}
                       </select>
                     </label>
-                    <span className="topic-pill">
-                      <Tag size={12} aria-hidden="true" />
+                    <span className="reader-topic-label">
                       <bdi>{activePage.topic}</bdi>
                     </span>
-                    {activePage.tags.map((tag) => (
-                      <span key={tag} className="mini-tag">
-                        <bdi>{tag}</bdi>
-                      </span>
-                    ))}
                   </div>
 
                   <div className="reader-toolbar-right">
-                    <button
-                      type="button"
-                      className="btn-secondary is-compact"
-                      onClick={() => setReadingFont((f) => (f === "sans" ? "serif" : "sans"))}
-                      title="切換正文字體（現代黑體／書卷襯線）"
-                    >
-                      <Type size={13} aria-hidden="true" />
-                      <span>{readingFont === "sans" ? "書卷襯線" : "現代黑體"}</span>
-                    </button>
-
-                    {activePage.annotations.length > 0 ? (
+                    <div className="reader-quiet-group" role="group" aria-label="閱讀選項">
                       <button
                         type="button"
-                        className="btn-secondary is-compact"
-                        onClick={() => setShowInk((v) => !v)}
-                        aria-pressed={showInk}
+                        className="icon-ghost-btn"
+                        onClick={() => setReadingFont((f) => (f === "sans" ? "serif" : "sans"))}
+                        title={readingFont === "sans" ? "切換書卷襯線體" : "切換現代黑體"}
                       >
-                        {showInk ? <EyeOff size={14} /> : <Eye size={14} />}
-                        <span>{showInk ? "隱藏筆跡" : "顯示筆跡"}</span>
+                        <Type size={14} aria-hidden="true" />
+                        <span>{readingFont === "sans" ? "襯線" : "黑體"}</span>
                       </button>
-                    ) : null}
 
-                    {pageToExplainHref ? (
-                      <a href={pageToExplainHref} className="btn-explain-chip">
-                        <AudioLines size={14} aria-hidden="true" />
-                        <span>送到 Explain</span>
-                      </a>
-                    ) : null}
+                      {activePage.annotations.length > 0 ? (
+                        <button
+                          type="button"
+                          className="icon-ghost-btn"
+                          onClick={() => setShowInk((v) => !v)}
+                          aria-pressed={showInk}
+                          title={showInk ? "暫時隱藏塗鴉" : "顯示塗鴉筆跡"}
+                        >
+                          {showInk ? <EyeOff size={14} /> : <Eye size={14} />}
+                          <span>{showInk ? "藏筆跡" : "顯筆跡"}</span>
+                        </button>
+                      ) : null}
 
-                    {pageToPersonalHref ? (
-                      <a href={pageToPersonalHref} className="btn-personal-chip">
-                        <CheckSquare size={14} aria-hidden="true" />
-                        <span>待辦</span>
-                      </a>
-                    ) : null}
+                      {pageToExplainHref ? (
+                        <a
+                          href={pageToExplainHref}
+                          className="icon-ghost-btn is-explain-link"
+                          title="傳送到 BELL Explain 深入理解"
+                        >
+                          <AudioLines size={14} aria-hidden="true" />
+                          <span>Explain</span>
+                        </a>
+                      ) : null}
+
+                      <div className="more-menu-wrap" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          className="icon-ghost-btn"
+                          aria-label="更多頁面操作"
+                          aria-expanded={moreMenuOpen}
+                          onClick={() => setMoreMenuOpen((v) => !v)}
+                        >
+                          <MoreHorizontal size={15} />
+                        </button>
+                        {moreMenuOpen ? (
+                          <div className="more-popover" role="menu">
+                            {activePage.url ? (
+                              <a
+                                href={activePage.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="more-menu-item"
+                                role="menuitem"
+                                onClick={() => setMoreMenuOpen(false)}
+                              >
+                                <ExternalLink size={13} aria-hidden="true" />
+                                <span>開啟原始網頁</span>
+                              </a>
+                            ) : null}
+                            {pageToPersonalHref ? (
+                              <a
+                                href={pageToPersonalHref}
+                                className="more-menu-item"
+                                role="menuitem"
+                                onClick={() => setMoreMenuOpen(false)}
+                              >
+                                <CheckSquare size={13} aria-hidden="true" />
+                                <span>轉成 BELL Personal 待辦</span>
+                              </a>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="more-menu-item is-danger"
+                              role="menuitem"
+                              onClick={async () => {
+                                setMoreMenuOpen(false);
+                                await apiWrite("DELETE", `/api/pages/${encodeURIComponent(activePage.id)}`);
+                                await loadLibrary();
+                                window.location.hash = "#/library";
+                              }}
+                            >
+                              <Trash2 size={13} aria-hidden="true" />
+                              <span>刪除此保存頁面</span>
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
 
                     {activePage.annotatedAt ? (
                       <button
                         type="button"
-                        className="btn-secondary"
+                        className="btn-secondary is-compact"
                         disabled={annotating}
                         onClick={handleAnnotatePage}
                         title="重新執行 AI 塗鴉標註（保留手寫批註）"
                       >
-                        <RefreshCw size={14} className={annotating ? "spin" : ""} />
-                        <span>{annotating ? "標註中…" : `已存 ${activePage.annotations.length} 則 · 重跑`}</span>
+                        <RefreshCw size={13} className={annotating ? "spin" : ""} />
+                        <span>{annotating ? "標註中…" : "重跑標註"}</span>
                       </button>
                     ) : (
                       <button
                         type="button"
-                        className="btn-primary"
+                        className="btn-primary is-compact"
                         disabled={annotating}
                         onClick={handleAnnotatePage}
                       >
-                        <Sparkles size={14} className={annotating ? "spin" : ""} />
-                        <span>{annotating ? "AI 正在畫重點…" : "AI 塗鴉標註"}</span>
+                        <Sparkles size={13} className={annotating ? "spin" : ""} />
+                        <span>{annotating ? "標註中…" : "AI 塗鴉標註"}</span>
                       </button>
                     )}
-
-                    <button
-                      type="button"
-                      className="icon-ghost-btn is-danger"
-                      aria-label="刪除此頁面"
-                      title="刪除此保存頁面"
-                      onClick={async () => {
-                        await apiWrite("DELETE", `/api/pages/${encodeURIComponent(activePage.id)}`);
-                        await loadLibrary();
-                        window.location.hash = "#/library";
-                      }}
-                    >
-                      <Trash2 size={15} />
-                    </button>
                   </div>
                 </div>
 
