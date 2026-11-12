@@ -1270,6 +1270,56 @@ select:focus-visible {
   text-transform: uppercase;
 }
 
+.reader-table-wrap {
+  margin: 16px 0;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--paper-sheet);
+}
+
+.reader-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.reader-table th,
+.reader-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  vertical-align: top;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.reader-table th:first-child,
+.reader-table td:first-child {
+  white-space: nowrap;
+}
+
+.reader-table th:last-child,
+.reader-table td:last-child {
+  border-right: none;
+}
+
+.reader-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.reader-table th {
+  background: var(--chrome);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.reader-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--chrome) 45%, transparent);
+}
+
 .reader-figure {
   margin: 20px 0;
 }

@@ -8,7 +8,7 @@ import type { ReaderBlock } from "../shared/types.js";
 import { AppError } from "./errors.js";
 
 const MAX_BYTES = 1_500_000;
-const MAX_BLOCKS = 120;
+const MAX_BLOCKS = 400;
 const MAX_BLOCK_CHARS = 2400;
 
 export function isPublicAddress(address: string): boolean {
@@ -61,12 +61,20 @@ function safeImageUrl(raw: string | undefined, baseUrl: URL): string | undefined
   }
 }
 
-export async function fetchPublicHtml(
+async function fetchPublicResource(
   input: string,
   signal: AbortSignal,
-): Promise<{ html: string; finalUrl: URL; contentType: string }> {
+  opts: {
+    accept: string;
+    contentTypePattern: RegExp;
+    invalidTypeError: string;
+    maxBytes: number;
+    sizeError: string;
+    timeoutMs: number;
+  },
+): Promise<{ buffer: Buffer; finalUrl: URL; contentType: string }> {
   let url = validatePublicUrl(input);
-  const timeout = AbortSignal.any([signal, AbortSignal.timeout(12_000)]);
+  const timeout = AbortSignal.any([signal, AbortSignal.timeout(opts.timeoutMs)]);
 
   for (let redirects = 0; redirects <= 3; redirects++) {
     timeout.throwIfAborted();
@@ -100,14 +108,14 @@ export async function fetchPublicHtml(
         redirect: "manual",
         headers: {
           "user-agent": "BELL-Web-Reader/0.1 (local personal study reader)",
-          accept: "text/html,text/plain,text/markdown;q=0.9,application/xhtml+xml;q=0.9",
+          accept: opts.accept,
         },
       });
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get("location");
         await response.body?.cancel();
         if (!location || redirects === 3) {
-          throw new AppError(422, "重新導向次數過多，請改用最終文章網址。");
+          throw new AppError(422, "重新導向次數過多。");
         }
         url = validatePublicUrl(new URL(location, url).href);
         continue;
@@ -120,35 +128,71 @@ export async function fetchPublicHtml(
         );
       }
       const contentType = response.headers.get("content-type") || "";
-      if (!/text\/|application\/(xhtml\+xml|xml|json)/i.test(contentType)) {
+      if (!opts.contentTypePattern.test(contentType)) {
         await response.body?.cancel();
-        throw new AppError(422, "此網址不是可閱讀的文字網頁，請直接貼上內容。");
+        throw new AppError(422, opts.invalidTypeError);
       }
-      if (Number(response.headers.get("content-length") || 0) > MAX_BYTES) {
+      if (Number(response.headers.get("content-length") || 0) > opts.maxBytes) {
         await response.body?.cancel();
-        throw new AppError(413, "網頁超過 1.5 MB 上限，請直接貼上想讀的段落。");
+        throw new AppError(413, opts.sizeError);
       }
       const reader = response.body?.getReader();
-      if (!reader) throw new AppError(422, "無法讀取網頁內容。");
+      if (!reader) throw new AppError(422, "無法讀取遠端內容。");
       const chunks: Uint8Array[] = [];
       let total = 0;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         total += value.byteLength;
-        if (total > MAX_BYTES) {
+        if (total > opts.maxBytes) {
           await reader.cancel();
-          throw new AppError(413, "網頁超過 1.5 MB 上限，請直接貼上想讀的段落。");
+          throw new AppError(413, opts.sizeError);
         }
         chunks.push(value);
       }
-      const html = Buffer.concat(chunks).toString("utf8");
-      return { html, finalUrl: url, contentType };
+      return { buffer: Buffer.concat(chunks), finalUrl: url, contentType };
     } finally {
       await dispatcher.close();
     }
   }
-  throw new AppError(422, "無法讀取網頁。");
+  throw new AppError(422, "無法讀取遠端內容。");
+}
+
+export async function fetchPublicHtml(
+  input: string,
+  signal: AbortSignal,
+): Promise<{ html: string; finalUrl: URL; contentType: string }> {
+  const { buffer, finalUrl, contentType } = await fetchPublicResource(input, signal, {
+    accept: "text/html,text/plain,text/markdown;q=0.9,application/xhtml+xml;q=0.9",
+    contentTypePattern: /text\/|application\/(xhtml\+xml|xml|json)/i,
+    invalidTypeError: "此網址不是可閱讀的文字網頁，請直接貼上內容。",
+    maxBytes: MAX_BYTES,
+    sizeError: "網頁超過 1.5 MB 上限，請直接貼上想讀的段落。",
+    timeoutMs: 12_000,
+  });
+  return { html: buffer.toString("utf8"), finalUrl, contentType };
+}
+
+export interface FetchedImage {
+  bytes: Buffer;
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  ext: "png" | "jpg" | "webp" | "gif";
+}
+
+export async function fetchPublicImage(input: string, signal: AbortSignal): Promise<FetchedImage> {
+  const { buffer, contentType } = await fetchPublicResource(input, signal, {
+    accept: "image/png,image/jpeg,image/webp,image/gif;q=0.9,*/*;q=0.5",
+    contentTypePattern: /^image\/(png|jpe?g|webp|gif)\b/i,
+    invalidTypeError: "不支援的圖片格式。",
+    maxBytes: 3_000_000,
+    sizeError: "圖片超過 3 MB 上限。",
+    timeoutMs: 8_000,
+  });
+  const lower = contentType.toLowerCase();
+  if (lower.includes("png")) return { bytes: buffer, mimeType: "image/png", ext: "png" };
+  if (lower.includes("webp")) return { bytes: buffer, mimeType: "image/webp", ext: "webp" };
+  if (lower.includes("gif")) return { bytes: buffer, mimeType: "image/gif", ext: "gif" };
+  return { bytes: buffer, mimeType: "image/jpeg", ext: "jpg" };
 }
 
 function normalizeInline(text: string): string {
@@ -162,6 +206,30 @@ function stripInlineMarkdown(text: string): string {
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/__([^_]+)__/g, "$1")
     .replace(/`([^`]+)`/g, "$1");
+}
+
+const TABLE_DIVIDER_RE = /^\|?\s*:?-{1,}:?\s*(?:\|\s*:?-{1,}:?\s*)+\|?$/;
+
+function splitMarkdownTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed
+    .split(/(?<!\\)\|/)
+    .map((cell) => normalizeInline(stripInlineMarkdown(cell.replace(/\\\|/g, "|"))));
+}
+
+function normalizeTableRows(rawRows: string[][]): string[][] {
+  const colCount = rawRows.reduce((max, r) => Math.max(max, r.length), 0);
+  if (colCount === 0) return [];
+  return rawRows.map((row) =>
+    Array.from({ length: colCount }, (_, idx) => row[idx] ?? ""),
+  );
+}
+
+function isMarkdownTableAt(lines: string[], index: number): boolean {
+  if (index + 1 >= lines.length) return false;
+  const header = lines[index].trim();
+  const divider = lines[index + 1].trim();
+  return header.includes("|") && TABLE_DIVIDER_RE.test(divider);
 }
 
 export interface ExtractedPage {
@@ -242,6 +310,31 @@ export function extractBlocksFromHtml(html: string, pageUrl: URL, contentType = 
         });
       return;
     }
+    if (tag === "table") {
+      const rawRows: string[][] = [];
+      $(el)
+        .find("tr")
+        .each((_, tr) => {
+          const cells: string[] = [];
+          $(tr)
+            .children("th, td")
+            .each((__, cell) => {
+              cells.push(normalizeInline($(cell).text()));
+            });
+          if (cells.some((c) => c.length > 0)) {
+            rawRows.push(cells);
+          }
+        });
+      const rows = normalizeTableRows(rawRows);
+      if (rows.length > 0) {
+        pushBlock({
+          kind: "table",
+          text: rows.map((r) => r.join(" | ")).join("\n"),
+          tableRows: rows,
+        });
+      }
+      return;
+    }
     if (tag === "img") {
       const src = safeImageUrl($(el).attr("src") || $(el).attr("data-src"), pageUrl);
       const alt = normalizeInline($(el).attr("alt") || "");
@@ -311,6 +404,25 @@ export function parsePastedContent(raw: string, explicitTitle?: string, siteName
       i++;
       continue;
     }
+    if (isMarkdownTableAt(lines, i)) {
+      const rawRows = [splitMarkdownTableRow(lines[i])];
+      i += 2; // Skip header and separator line
+      while (i < lines.length) {
+        const rowLine = lines[i].trim();
+        if (!rowLine || /^(```|\$\$|#{1,4}\s+)/.test(rowLine) || !rowLine.includes("|")) break;
+        rawRows.push(splitMarkdownTableRow(lines[i]));
+        i++;
+      }
+      const rows = normalizeTableRows(rawRows);
+      if (rows.length > 0) {
+        push({
+          kind: "table",
+          text: rows.map((r) => r.join(" | ")).join("\n"),
+          tableRows: rows,
+        });
+      }
+      continue;
+    }
     const fence = /^```([a-z0-9_+-]*)\s*$/i.exec(trimmed);
     if (fence) {
       const codeLines: string[] = [];
@@ -346,9 +458,9 @@ export function parsePastedContent(raw: string, explicitTitle?: string, siteName
       i++;
       continue;
     }
-    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
     if (heading) {
-      const level = heading[1].length as 1 | 2 | 3;
+      const level = Math.min(3, heading[1].length) as 1 | 2 | 3;
       const text = stripInlineMarkdown(heading[2].trim());
       if (level === 1 && blocks.length === 0 && (!inferredTitle || inferredTitle === text)) {
         inferredTitle = text;
@@ -379,7 +491,8 @@ export function parsePastedContent(raw: string, explicitTitle?: string, siteName
     while (
       i < lines.length &&
       lines[i].trim() &&
-      !/^(```|\$\$|#{1,3}\s+|>\s*|([-*+]|\d+\.)\s+|!\[[^\]]*\]\(https?:\/\/)/.test(lines[i].trim())
+      !isMarkdownTableAt(lines, i) &&
+      !/^(```|\$\$|#{1,4}\s+|>\s*|([-*+]|\d+\.)\s+|!\[[^\]]*\]\(https?:\/\/)/.test(lines[i].trim())
     ) {
       paraLines.push(lines[i].trim());
       i++;

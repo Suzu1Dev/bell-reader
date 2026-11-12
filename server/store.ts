@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+  AI_PROVIDERS,
   INK_COLORS,
   type Folder,
   type InkColor,
@@ -29,11 +30,14 @@ interface PageRow {
   title: string;
   excerpt: string;
   blocks_json: string;
+  translated_title: string | null;
+  translated_blocks_json: string | null;
   topic: string;
   tags_json: string;
   summary: string | null;
   folder_id: string | null;
   annotated_at: string | null;
+  translated_at: string | null;
   created_at: string;
   updated_at: string;
   annotation_count?: number;
@@ -125,6 +129,14 @@ export class ReaderStore {
     const colNames = new Set(cols.map((c) => c.name));
     if (!colNames.has("anchor_x")) this.db.exec("ALTER TABLE annotations ADD COLUMN anchor_x REAL");
     if (!colNames.has("anchor_y")) this.db.exec("ALTER TABLE annotations ADD COLUMN anchor_y REAL");
+
+    const pageCols = this.db.prepare("PRAGMA table_info(pages)").all() as Array<{ name: string }>;
+    const pageColNames = new Set(pageCols.map((c) => c.name));
+    if (!pageColNames.has("translated_title")) this.db.exec("ALTER TABLE pages ADD COLUMN translated_title TEXT");
+    if (!pageColNames.has("translated_blocks_json")) {
+      this.db.exec("ALTER TABLE pages ADD COLUMN translated_blocks_json TEXT");
+    }
+    if (!pageColNames.has("translated_at")) this.db.exec("ALTER TABLE pages ADD COLUMN translated_at TEXT");
   }
 
   close(): void {
@@ -137,7 +149,10 @@ export class ReaderStore {
     try {
       const parsed = JSON.parse(row.json) as Partial<ProviderSettings>;
       return {
-        provider: parsed.provider === "claude" || parsed.provider === "api" ? parsed.provider : "codex",
+        provider:
+          typeof parsed.provider === "string" && (AI_PROVIDERS as readonly string[]).includes(parsed.provider)
+            ? (parsed.provider as ProviderSettings["provider"])
+            : "codex",
         model: typeof parsed.model === "string" ? parsed.model.slice(0, 160) : "",
         autoFolder: typeof parsed.autoFolder === "boolean" ? parsed.autoFolder : true,
       };
@@ -241,6 +256,7 @@ export class ReaderStore {
       folderId: row.folder_id,
       annotationCount,
       ...(row.annotated_at ? { annotatedAt: row.annotated_at } : {}),
+      ...(row.translated_at ? { translatedAt: row.translated_at } : {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -295,13 +311,23 @@ export class ReaderStore {
     const annotations = annRows.map((a) => this.mapAnnotation(a));
     let blocks: ReaderBlock[] = [];
     try {
-      blocks = JSON.parse(row.blocks_json) as ReaderBlock[];
+      blocks = JSON.parse(row.blocks_json!) as ReaderBlock[];
     } catch {
       blocks = [];
+    }
+    let translatedBlocks: ReaderBlock[] | undefined;
+    if (row.translated_blocks_json) {
+      try {
+        translatedBlocks = JSON.parse(row.translated_blocks_json) as ReaderBlock[];
+      } catch {
+        translatedBlocks = undefined;
+      }
     }
     return {
       ...this.mapSummary(row, annotations.length),
       blocks,
+      ...(row.translated_title ? { translatedTitle: row.translated_title } : {}),
+      ...(translatedBlocks ? { translatedBlocks } : {}),
       annotations,
     };
   }
@@ -378,6 +404,26 @@ export class ReaderStore {
     return this.getPage(id)!;
   }
 
+  saveTranslation(pageId: string, result: { title: string; blocks: ReaderBlock[] }): SavedPage {
+    const current = this.getPage(pageId);
+    if (!current) throw new AppError(404, "找不到此頁面。");
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`
+        UPDATE pages
+        SET translated_title = ?, translated_blocks_json = ?, translated_at = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        result.title.trim().slice(0, 160) || current.title,
+        JSON.stringify(result.blocks),
+        now,
+        now,
+        pageId,
+      );
+    return this.getPage(pageId)!;
+  }
+
   deletePage(id: string): void {
     const res = this.db.prepare("DELETE FROM pages WHERE id = ?").run(id);
     if (!res.changes) throw new AppError(404, "找不到此頁面。");
@@ -401,8 +447,8 @@ export class ReaderStore {
       this.db.prepare("DELETE FROM annotations WHERE page_id = ? AND source = 'ai'").run(pageId);
       const insert = this.db.prepare(`
         INSERT INTO annotations (
-          id, page_id, block_id, quote, start_offset, end_offset, style, color, label, note, topic, source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?)
+          id, page_id, block_id, quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?)
       `);
       for (const item of result.annotations) {
         insert.run(
@@ -417,6 +463,8 @@ export class ReaderStore {
           item.label ?? null,
           item.note,
           item.topic ?? null,
+          item.anchorX ?? null,
+          item.anchorY ?? null,
           now,
         );
       }

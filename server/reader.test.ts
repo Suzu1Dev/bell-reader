@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { createApp } from "./app.js";
+import { annotatePageWithAI } from "./ai.js";
 import {
   extractBlocksFromHtml,
   parsePastedContent,
@@ -98,6 +99,27 @@ float sdBox(vec2 p) { return length(p); }
     mdPage.blocks.map((b) => b.kind),
     ["paragraph", "list", "image", "code"],
   );
+
+  // Markdown tables & HTML tables both parse as structured "table" blocks
+  const mdWithTable = parsePastedContent(
+    "# 指令集對照\n\n說明文字。\n\n| 指令 | 用途 | 範例 |\n| :--- | --- | ---: |\n| `add` | 暫存器相加 | `add rd, rs1, rs2` |\n| `lw` | 載入位元組 | `lw rd, 0(rs1)` |",
+  );
+  const mdTableBlock = mdWithTable.blocks.find((b) => b.kind === "table");
+  assert.ok(mdTableBlock);
+  assert.equal(mdTableBlock.tableRows?.length, 3);
+  assert.deepEqual(mdTableBlock.tableRows?.[0], ["指令", "用途", "範例"]);
+  assert.deepEqual(mdTableBlock.tableRows?.[1], ["add", "暫存器相加", "add rd, rs1, rs2"]);
+
+  const htmlWithTable = extractBlocksFromHtml(
+    `<article><h1>CSR 表格</h1><table><thead><tr><th>名稱</th><th>位址</th></tr></thead><tbody><tr><td>mcycle</td><td>0xB00</td></tr></tbody></table></article>`,
+    new URL("https://example.com/csr-table"),
+  );
+  const htmlTableBlock = htmlWithTable.blocks.find((b) => b.kind === "table");
+  assert.ok(htmlTableBlock);
+  assert.deepEqual(htmlTableBlock.tableRows, [
+    ["名稱", "位址"],
+    ["mcycle", "0xB00"],
+  ]);
   assert.equal(mdPage.blocks[0].text, "透過最近距離描述幾何邊界。");
 });
 
@@ -142,9 +164,17 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
         contentType: "text/html",
       };
     },
-    aiRunner: async (_input, _settings, signal) => {
+    aiRunner: async (input, _settings, signal) => {
       await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(signal?.aborted, false, "request body completion must not abort AI runner");
+      if (input.includes('"translations"')) {
+        return {
+          title: "RISC-V 指令集模擬器實戰",
+          translations: [
+            { id: "b1", text: "記憶體子系統（Memory Subsystem）負責載入 ELF 映像檔。" },
+          ],
+        };
+      }
       return {
         topic: "Event Loop",
         tags: ["Microtask", "瀏覽器渲染"],
@@ -306,6 +336,142 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
     assert.equal(imgAnnBody.annotation.anchorX, 0.72);
     assert.equal(imgAnnBody.annotation.anchorY, 0.34);
     assert.equal(imgAnnBody.annotation.label, "指令峰值");
+
+    // 7. AI automatic annotation can target image blocks with anchor coordinates and persist across replaceAiAnnotations
+    const mockAiImg = await annotatePageWithAI(
+      imgPageBody.page as never,
+      [],
+      { provider: "codex", model: "", autoFolder: false },
+      new AbortController().signal,
+      async () => ({
+        topic: "效能分析",
+        tags: ["Benchmark"],
+        summary: "測試 AI 針對圖表的自動座標標註。",
+        suggestedFolder: "效能監測",
+        annotations: [
+          {
+            blockId: imgBlock.id,
+            quote: "P99 延遲突波",
+            style: "box",
+            color: "amber",
+            label: "圖表關鍵",
+            note: "右側突波顯示 GC 停頓造成尾部延遲拉高。",
+            topic: "尾端延遲",
+            anchorX: 0.81,
+            anchorY: 0.27,
+          },
+        ],
+      }),
+      async () => ({
+        bytes: Buffer.from("iVBORw0KGgo=", "base64"),
+        mimeType: "image/png",
+        ext: "png",
+      }),
+    );
+    const aiImgAnn = mockAiImg.annotations.find((a) => a.blockId === imgBlock.id);
+    assert.ok(aiImgAnn);
+    assert.equal(aiImgAnn.anchorX, 0.81);
+    assert.equal(aiImgAnn.anchorY, 0.27);
+    const persistedPage = store.replaceAiAnnotations(imgPageBody.page.id, {
+      topic: mockAiImg.topic,
+      tags: mockAiImg.tags,
+      summary: mockAiImg.summary,
+      annotations: mockAiImg.annotations,
+    });
+    const savedAiImg = persistedPage.annotations.find((a) => a.source === "ai" && a.blockId === imgBlock.id);
+    assert.ok(savedAiImg);
+    assert.equal(savedAiImg.anchorX, 0.81);
+    assert.equal(savedAiImg.anchorY, 0.27);
+
+    // 8. Provider settings accept "antigravity" cleanly
+    const agyPatchRes = await fetch(`${srv.url}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "antigravity", model: "gemini-3.8-flash-medium" }),
+    });
+    assert.equal(agyPatchRes.status, 200);
+    const agySettings = (await agyPatchRes.json()) as { provider: string; model: string };
+    assert.equal(agySettings.provider, "antigravity");
+    assert.equal(agySettings.model, "gemini-3.8-flash-medium");
+
+    // 9. Long articles (>70 blocks) chunk across multiple passes so latter sections receive annotations
+    const longBlocks = Array.from({ length: 82 }, (_, i) => ({
+      id: `b${i + 1}`,
+      kind: "paragraph" as const,
+      text: `Section ${i + 1}: RISC-V CSR instruction pipeline execution detail number ${i + 1}.`,
+    }));
+    let chunkCalls = 0;
+    const longResult = await annotatePageWithAI(
+      {
+        ...(imgPageBody.page as object),
+        id: "long-page-test",
+        title: "Long RISC-V Walkthrough",
+        blocks: longBlocks,
+      } as never,
+      [],
+      { provider: "codex", model: "", autoFolder: false },
+      new AbortController().signal,
+      async (prompt) => {
+        chunkCalls++;
+        const marker = "輸入資料：\n";
+        const payload = JSON.parse(prompt.slice(prompt.indexOf(marker) + marker.length));
+        const lastBlock = payload.blocks[payload.blocks.length - 1] as { id: string; text: string };
+        const baseAnn = {
+          blockId: lastBlock.id,
+          quote: lastBlock.text.slice(0, 32),
+          style: "highlight" as const,
+          color: "violet" as const,
+          label: "段落重點",
+          note: `來自區段 ${payload.section} 的核心解釋與注意事項。`,
+          topic: "RISC-V",
+        };
+        if (chunkCalls === 1 && payload.section.startsWith("1/")) {
+          return {
+            topic: "RISC-V",
+            tags: ["Emulator", "RISC-V"],
+            summary: "涵蓋開頭、中段與結尾的完整導讀筆記。",
+            suggestedFolder: "系統架構",
+            annotations: [baseAnn],
+          };
+        }
+        return { annotations: [baseAnn] };
+      },
+    );
+    assert.ok(chunkCalls >= 2, `expected multi-chunk calls, got ${chunkCalls}`);
+    assert.ok(
+      longResult.annotations.some((a) => Number(a.blockId.slice(1)) >= 70),
+      "expected annotations in the latter half of long article (>= b70)",
+    );
+
+    // 10. Whole-page translation endpoint translates prose while preserving code blocks byte-for-byte
+    const codeText = "uint32_t csr_read(uint32_t addr) { return mcycle; }";
+    const enPageRes = await fetch(`${srv.url}/api/pages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "RISC-V Lab",
+        content: `# RISC-V Lab\n\nMemory subsystem loads ELF images.\n\n\`\`\`c\n${codeText}\n\`\`\``,
+      }),
+    });
+    assert.equal(enPageRes.status, 201);
+    const enPageBody = (await enPageRes.json()) as { page: { id: string } };
+    const trRes = await fetch(`${srv.url}/api/pages/${enPageBody.page.id}/translate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(trRes.status, 200);
+    const trBody = (await trRes.json()) as {
+      page: {
+        translatedTitle?: string;
+        translatedAt?: string;
+        translatedBlocks?: Array<{ kind: string; text: string }>;
+      };
+    };
+    assert.equal(trBody.page.translatedTitle, "RISC-V 指令集模擬器實戰");
+    assert.ok(trBody.page.translatedAt);
+    assert.ok(trBody.page.translatedBlocks?.[0].text.includes("記憶體子系統"));
+    const translatedCode = trBody.page.translatedBlocks?.find((b) => b.kind === "code");
+    assert.equal(translatedCode?.text, codeText);
   } finally {
     await srv.close();
     store.close();

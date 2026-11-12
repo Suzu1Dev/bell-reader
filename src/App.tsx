@@ -14,6 +14,7 @@ import {
   FolderPlus,
   Globe,
   Highlighter,
+  Languages,
   Layers,
   Moon,
   MoreHorizontal,
@@ -142,6 +143,8 @@ export default function App() {
   const annotateAbortRef = useRef<AbortController | null>(null);
   const [selectionBusy, setSelectionBusy] = useState(false);
   const [showInk, setShowInk] = useState(true);
+  const [translating, setTranslating] = useState(false);
+  const [showTranslation, setShowTranslation] = useState(false);
   const [explainStatus, setExplainStatus] = useState<ExplainBridgeStatus>({
     status: "unconfigured",
     matches: [],
@@ -308,6 +311,7 @@ export default function App() {
     }
     let cancelled = false;
     setPageLoading(true);
+    setShowTranslation(false);
     setNotice(null);
     apiGet<SavedPage>(`/api/pages/${encodeURIComponent(route.id)}`)
       .then((page) => {
@@ -402,6 +406,40 @@ export default function App() {
   const handleCancelAnnotate = () => {
     annotateAbortRef.current?.abort();
   };
+
+  const handleTranslatePage = async (force = false) => {
+    if (!activePage || translating) return;
+    if (activePage.translatedBlocks && !force) {
+      setShowTranslation((v) => !v);
+      return;
+    }
+    setTranslating(true);
+    setNotice(null);
+    try {
+      const res = await apiWrite<{ page: SavedPage }>(
+        "POST",
+        `/api/pages/${encodeURIComponent(activePage.id)}/translate`,
+      );
+      setActivePage(res.page);
+      setShowTranslation(true);
+      await loadLibrary();
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : "翻譯失敗，請重試。" });
+    } finally {
+      setTranslating(false);
+    }
+  };
+
+  const isTranslatedView = Boolean(showTranslation && activePage?.translatedBlocks);
+  const displayPage = useMemo(() => {
+    if (!activePage) return null;
+    if (!isTranslatedView || !activePage.translatedBlocks) return activePage;
+    return {
+      ...activePage,
+      title: activePage.translatedTitle || activePage.title,
+      blocks: activePage.translatedBlocks,
+    };
+  }, [activePage, isTranslatedView]);
 
   const handleCreateFolder = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -806,6 +844,32 @@ export default function App() {
                   <button
                     type="button"
                     className="icon-ghost-btn"
+                    disabled={translating}
+                    aria-pressed={isTranslatedView}
+                    onClick={() => void handleTranslatePage(false)}
+                    title={
+                      activePage.translatedBlocks
+                        ? isTranslatedView
+                          ? "切換回原文對照"
+                          : "顯示台灣繁體中文譯文"
+                        : "全文翻譯成台灣繁體中文（保留程式碼與專有名詞原文）"
+                    }
+                  >
+                    <Languages size={14} className={translating ? "spin" : ""} aria-hidden="true" />
+                    <span>
+                      {translating
+                        ? "翻譯中…"
+                        : activePage.translatedBlocks
+                          ? isTranslatedView
+                            ? "看原文"
+                            : "看譯文"
+                          : "繁中翻譯"}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="icon-ghost-btn"
                     onClick={() => setReadingFont((f) => (f === "sans" ? "serif" : "sans"))}
                     title={readingFont === "sans" ? "切換書卷襯線體" : "切換現代黑體"}
                   >
@@ -872,6 +936,21 @@ export default function App() {
                             <CheckSquare size={13} aria-hidden="true" />
                             <span>轉成 BELL Personal 待辦</span>
                           </a>
+                        ) : null}
+                        {activePage.translatedBlocks ? (
+                          <button
+                            type="button"
+                            className="more-menu-item"
+                            role="menuitem"
+                            disabled={translating}
+                            onClick={() => {
+                              setMoreMenuOpen(false);
+                              void handleTranslatePage(true);
+                            }}
+                          >
+                            <RefreshCw size={13} aria-hidden="true" />
+                            <span>重新翻譯全文（繁中）</span>
+                          </button>
                         ) : null}
                         <button
                           type="button"
@@ -1210,7 +1289,7 @@ export default function App() {
                     ) : null}
                   </div>
                   <h1>
-                    <bdi>{activePage.title}</bdi>
+                    <bdi>{displayPage?.title ?? activePage.title}</bdi>
                   </h1>
 
                   {explainStatus.matches.length > 0 && explainOrigin ? (
@@ -1236,8 +1315,9 @@ export default function App() {
                 </header>
 
                 <InkStage
-                  page={activePage}
+                  page={displayPage ?? activePage}
                   showInk={showInk}
+                  isTranslatedView={isTranslatedView}
                   readingFont={readingFont}
                   explainOrigin={explainOrigin}
                   selectionBusy={selectionBusy}
@@ -1339,6 +1419,7 @@ export default function App() {
                 >
                   <option value="codex">Codex CLI（本機登入）</option>
                   <option value="claude">Claude CLI（本機登入）</option>
+                  <option value="antigravity">Antigravity CLI（本機 agy）</option>
                   <option value="api">OpenAI 相容 API（AI_API_KEY）</option>
                 </select>
               </label>
@@ -1349,7 +1430,7 @@ export default function App() {
                   type="text"
                   value={settings.model}
                   onChange={(e) => setSettings((s) => ({ ...s, model: e.target.value }))}
-                  placeholder="例如 gpt-5 / claude-sonnet-4-5"
+                  placeholder="例如 gpt-5 / claude-sonnet-4-5 / gemini-3.8-flash-medium"
                 />
               </label>
 

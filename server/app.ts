@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
 import {
+  AI_PROVIDERS,
   INK_COLORS,
   INK_STYLES,
 } from "../shared/types.js";
@@ -16,7 +17,12 @@ import {
   type SuiteTodayFeed,
   type SuiteTodayItem,
 } from "../shared/suite.js";
-import { annotatePageWithAI, annotateSelectionWithAI, type JsonPromptRunner } from "./ai.js";
+import {
+  annotatePageWithAI,
+  annotateSelectionWithAI,
+  translatePageWithAI,
+  type JsonPromptRunner,
+} from "./ai.js";
 import { AppError, publicError } from "./errors.js";
 import { ExplainBridge } from "./explain-bridge.js";
 import {
@@ -90,7 +96,7 @@ const aiSelectionSchema = z
 
 const settingsPatchSchema = z
   .object({
-    provider: z.enum(["codex", "claude", "api"]).optional(),
+    provider: z.enum(AI_PROVIDERS).optional(),
     model: z.string().max(160).optional(),
     autoFolder: z.boolean().optional(),
   })
@@ -326,8 +332,8 @@ export function createApp(options: CreateAppOptions) {
 
     const wantsStream = String(req.headers.accept ?? "").includes("application/x-ndjson");
     const stages = [
-      "正在拆解頁面段落與語意重點…",
-      "正在以螢光筆與手繪線條標記關鍵句…",
+      "正在拆解頁面段落與圖表內容…",
+      "正在以螢光筆與手繪線條標記重點文句與圖形座標…",
       "正在撰寫頁邊手寫筆記並分類主題…",
       "正在比對 BELL Explain 知識庫連結…",
     ];
@@ -419,6 +425,26 @@ export function createApp(options: CreateAppOptions) {
       );
       const created = store.addAnnotation(page.id, item);
       res.status(201).json({ annotation: created, page: store.getPage(page.id)! });
+    } finally {
+      res.off("close", onClose);
+    }
+  });
+
+  app.post("/api/pages/:id/translate", async (req, res) => {
+    const page = store.getPage(req.params.id);
+    if (!page) throw new AppError(404, "找不到此頁面。");
+
+    const settings = store.getSettings();
+    const controller = new AbortController();
+    const onClose = () => {
+      if (!res.writableEnded) controller.abort();
+    };
+    res.on("close", onClose);
+
+    try {
+      const translated = await translatePageWithAI(page, settings, controller.signal, aiRunner);
+      const updated = store.saveTranslation(page.id, translated);
+      res.json({ page: updated });
     } finally {
       res.off("close", onClose);
     }

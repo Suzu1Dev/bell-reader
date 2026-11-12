@@ -1,4 +1,4 @@
-export type BlockKind = "heading" | "paragraph" | "code" | "quote" | "list" | "image";
+export type BlockKind = "heading" | "paragraph" | "code" | "quote" | "list" | "image" | "table";
 
 export interface ReaderBlock {
   id: string;
@@ -8,6 +8,7 @@ export interface ReaderBlock {
   language?: string;
   imageUrl?: string;
   alt?: string;
+  tableRows?: string[][];
 }
 
 export const INK_STYLES = ["highlight", "underline", "box", "bracket"] as const;
@@ -55,12 +56,15 @@ export interface SavedPageSummary {
   folderId: string | null;
   annotationCount: number;
   annotatedAt?: string;
+  translatedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface SavedPage extends SavedPageSummary {
   blocks: ReaderBlock[];
+  translatedTitle?: string;
+  translatedBlocks?: ReaderBlock[];
   annotations: PageAnnotation[];
 }
 
@@ -79,7 +83,8 @@ export interface ExplainBridgeStatus {
   matches: ExplainTopicMatch[];
 }
 
-export type AIProviderKind = "claude" | "codex" | "api";
+export const AI_PROVIDERS = ["codex", "claude", "antigravity", "api"] as const;
+export type AIProviderKind = (typeof AI_PROVIDERS)[number];
 
 export interface ProviderSettings {
   provider: AIProviderKind;

@@ -33,6 +33,7 @@ interface MeasuredAnchor {
   blockTextRight: number;
   blockBottom: number;
   blockIsSingleLine: boolean;
+  isFallbackAnchor?: boolean;
 }
 
 interface PlacedNoteMeta {
@@ -127,7 +128,13 @@ function renderInteractiveText(
 ): ReactNode {
   if (!showInk || !annotations.length) return text;
   const sorted = [...annotations]
-    .filter((a) => a.startOffset >= 0 && a.endOffset > a.startOffset && a.endOffset <= text.length)
+    .filter(
+      (a) =>
+        a.startOffset >= 0 &&
+        a.endOffset > a.startOffset &&
+        a.endOffset <= text.length &&
+        text.slice(a.startOffset, a.endOffset) === a.quote,
+    )
     .sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset);
 
   const pieces: ReactNode[] = [];
@@ -333,6 +340,7 @@ function arrowEndpoints(
 export default function InkStage({
   page,
   showInk,
+  isTranslatedView = false,
   readingFont,
   explainOrigin,
   selectionBusy,
@@ -342,6 +350,7 @@ export default function InkStage({
 }: {
   page: SavedPage;
   showInk: boolean;
+  isTranslatedView?: boolean;
   readingFont: "sans" | "serif";
   explainOrigin?: string;
   selectionBusy: boolean;
@@ -494,15 +503,42 @@ export default function InkStage({
       const fullText = blockEl.textContent ?? "";
       let start = ann.startOffset;
       let end = ann.endOffset;
+      let fallbackToBlock = false;
       if (start < 0 || end > fullText.length || fullText.slice(start, end) !== ann.quote) {
         const idx = fullText.indexOf(ann.quote);
         if (idx >= 0) {
           start = idx;
           end = idx + ann.quote.length;
         } else {
-          continue;
+          fallbackToBlock = true;
         }
       }
+
+      if (fallbackToBlock) {
+        const r = blockEl.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) continue;
+        const box: BoxRect = {
+          left: r.left - stageRect.left,
+          top: r.top - stageRect.top,
+          width: r.width,
+          height: r.height,
+        };
+        const bg = blockGeom.get(ann.blockId);
+        nextMeasured.push({
+          annotation: ann,
+          blockKind: blockKindById.get(ann.blockId) ?? "paragraph",
+          rects: [box],
+          bounds: box,
+          firstRect: box,
+          lastRect: box,
+          blockTextRight: bg?.textRight ?? box.left + box.width,
+          blockBottom: bg?.bottom ?? box.top + box.height,
+          blockIsSingleLine: bg?.singleLine ?? false,
+          isFallbackAnchor: true,
+        });
+        continue;
+      }
+
       const range = findRangeInElement(blockEl, start, end);
       if (!range) continue;
       const clientRects = Array.from(range.getClientRects()).filter((r) => r.width > 1 && r.height > 1);
@@ -727,6 +763,7 @@ export default function InkStage({
   };
 
   const handleMouseUp = () => {
+    if (isTranslatedView) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
       if (!manualOpen) setSelection(null);
@@ -793,6 +830,40 @@ export default function InkStage({
           <div ref={setRef} data-block-text={block.id} className="reader-list-text">
             {content}
           </div>
+        </div>
+      );
+    } else if (block.kind === "table") {
+      const rows = block.tableRows?.length
+        ? block.tableRows
+        : block.text
+            .split("\n")
+            .map((r) => r.split(" | ").map((c) => c.trim()))
+            .filter((r) => r.some(Boolean));
+      let offset = 0;
+      const cellNodes = rows.map((row, rIdx) => {
+        const rowNodes = row.map((cell, cIdx) => {
+          const start = offset;
+          const end = start + cell.length;
+          offset = end + (cIdx < row.length - 1 ? 3 : 0);
+          const cellAnns = blockAnns
+            .filter((a) => a.startOffset < end && a.endOffset > start)
+            .map((a) => ({
+              ...a,
+              startOffset: Math.max(0, a.startOffset - start),
+              endOffset: Math.min(cell.length, a.endOffset - start),
+            }));
+          const rendered = renderInteractiveText(cell, cellAnns, activeId, setActiveId, showInk);
+          return rIdx === 0 ? <th key={cIdx}>{rendered}</th> : <td key={cIdx}>{rendered}</td>;
+        });
+        offset += rIdx < rows.length - 1 ? 1 : 0;
+        return <tr key={rIdx}>{rowNodes}</tr>;
+      });
+      element = (
+        <div className="reader-table-wrap">
+          <table ref={setRef} data-block-text={block.id} className="reader-table">
+            {cellNodes.length > 0 ? <thead>{cellNodes[0]}</thead> : null}
+            {cellNodes.length > 1 ? <tbody>{cellNodes.slice(1)}</tbody> : null}
+          </table>
         </div>
       );
     } else if (block.kind === "image" && block.imageUrl) {
@@ -942,7 +1013,8 @@ export default function InkStage({
 
             return (
               <g key={annotation.id} className={`ink-stroke-group ${isActive ? "is-active" : ""}`}>
-                {annotation.style === "highlight" &&
+                {!m.isFallbackAnchor &&
+                  annotation.style === "highlight" &&
                   rects.map((rect, idx) => (
                     <path
                       key={idx}
@@ -952,7 +1024,8 @@ export default function InkStage({
                       className="ink-highlighter-path"
                     />
                   ))}
-                {annotation.style === "underline" &&
+                {!m.isFallbackAnchor &&
+                  annotation.style === "underline" &&
                   rects.map((rect, idx) => (
                     <path
                       key={idx}
@@ -963,7 +1036,8 @@ export default function InkStage({
                       strokeLinecap="round"
                     />
                   ))}
-                {annotation.style === "box" &&
+                {!m.isFallbackAnchor &&
+                  annotation.style === "box" &&
                   rects.map((rect, idx) => (
                     <path
                       key={idx}
@@ -975,7 +1049,7 @@ export default function InkStage({
                       strokeLinejoin="round"
                     />
                   ))}
-                {annotation.style === "bracket" && (
+                {!m.isFallbackAnchor && annotation.style === "bracket" && (
                   <path
                     d={bracketPath(bounds, annotation.id)}
                     fill="none"
