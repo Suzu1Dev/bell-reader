@@ -155,6 +155,15 @@ function normalizeInline(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, MAX_BLOCK_CHARS);
 }
 
+function stripInlineMarkdown(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1");
+}
+
 export interface ExtractedPage {
   title: string;
   siteName?: string;
@@ -261,6 +270,11 @@ export function extractBlocksFromHtml(html: string, pageUrl: URL, contentType = 
   root.contents().each((_, child) => walk(child));
 
   if (!blocks.length) {
+    const rawCandidate = ($("#publish-page, #doc").first().text() || root.text()).replace(/\r\n?/g, "\n").trim();
+    if (rawCandidate.includes("\n") && /^(?:#{1,3}\s+|```|!\[[^\]]*\]\(https?:\/\/|[-*+]\s+|\$\$)/m.test(rawCandidate)) {
+      const cleanTitle = rawTitle.replace(/\s+-\s+HackMD$/i, "").trim();
+      return parsePastedContent(rawCandidate, cleanTitle, siteName.slice(0, 60));
+    }
     const fallback = normalizeInline(root.text());
     if (!fallback) throw new AppError(422, "無法從此網頁擷取正文（可能是純動態渲染網站），請直接貼上文字內容。");
     pushBlock({ kind: "paragraph", text: fallback });
@@ -276,7 +290,7 @@ export function extractBlocksFromHtml(html: string, pageUrl: URL, contentType = 
   };
 }
 
-export function parsePastedContent(raw: string, explicitTitle?: string): ExtractedPage {
+export function parsePastedContent(raw: string, explicitTitle?: string, siteName?: string): ExtractedPage {
   const cleaned = raw.replace(/\r\n?/g, "\n").trim();
   if (!cleaned) throw new AppError(400, "請輸入網址或貼上想閱讀的內容。");
 
@@ -292,11 +306,12 @@ export function parsePastedContent(raw: string, explicitTitle?: string): Extract
   let i = 0;
   while (i < lines.length && blocks.length < MAX_BLOCKS) {
     const line = lines[i];
-    if (!line.trim()) {
+    const trimmed = line.trim();
+    if (!trimmed) {
       i++;
       continue;
     }
-    const fence = /^```([a-z0-9_+-]*)\s*$/i.exec(line.trim());
+    const fence = /^```([a-z0-9_+-]*)\s*$/i.exec(trimmed);
     if (fence) {
       const codeLines: string[] = [];
       i++;
@@ -308,11 +323,34 @@ export function parsePastedContent(raw: string, explicitTitle?: string): Extract
       push({ kind: "code", text: codeLines.join("\n"), ...(fence[1] ? { language: fence[1] } : {}) });
       continue;
     }
-    const heading = /^(#{1,3})\s+(.+)$/.exec(line.trim());
+    if (trimmed === "$$") {
+      const mathLines: string[] = [];
+      i++;
+      while (i < lines.length && lines[i].trim() !== "$$") {
+        mathLines.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++;
+      push({ kind: "code", language: "math", text: mathLines.join("\n").trim() });
+      continue;
+    }
+    const imgMatch = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)\s*$/.exec(trimmed);
+    if (imgMatch) {
+      const alt = normalizeInline(imgMatch[1]);
+      try {
+        const src = validatePublicUrl(imgMatch[2]).href;
+        push({ kind: "image", text: alt || "文章附圖", imageUrl: src, ...(alt ? { alt } : {}) });
+      } catch {
+        // Skip invalid/private image URLs
+      }
+      i++;
+      continue;
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
     if (heading) {
       const level = heading[1].length as 1 | 2 | 3;
-      const text = heading[2].trim();
-      if (!inferredTitle && level === 1 && blocks.length === 0) {
+      const text = stripInlineMarkdown(heading[2].trim());
+      if (level === 1 && blocks.length === 0 && (!inferredTitle || inferredTitle === text)) {
         inferredTitle = text;
       } else {
         push({ kind: "heading", text, level });
@@ -320,17 +358,20 @@ export function parsePastedContent(raw: string, explicitTitle?: string): Extract
       i++;
       continue;
     }
-    if (/^>\s*/.test(line.trim())) {
+    if (/^>\s*/.test(trimmed)) {
       const quoteLines: string[] = [];
       while (i < lines.length && /^>\s*/.test(lines[i].trim())) {
         quoteLines.push(lines[i].trim().replace(/^>\s*/, ""));
         i++;
       }
-      push({ kind: "quote", text: normalizeInline(quoteLines.join(" ")) });
+      push({ kind: "quote", text: normalizeInline(stripInlineMarkdown(quoteLines.join(" "))) });
       continue;
     }
-    if (/^([-*+]|\d+\.)\s+/.test(line.trim())) {
-      push({ kind: "list", text: normalizeInline(line.trim().replace(/^([-*+]|\d+\.)\s+/, "")) });
+    if (/^([-*+]|\d+\.)\s+/.test(trimmed)) {
+      push({
+        kind: "list",
+        text: normalizeInline(stripInlineMarkdown(trimmed.replace(/^([-*+]|\d+\.)\s+/, ""))),
+      });
       i++;
       continue;
     }
@@ -338,12 +379,12 @@ export function parsePastedContent(raw: string, explicitTitle?: string): Extract
     while (
       i < lines.length &&
       lines[i].trim() &&
-      !/^(```|#{1,3}\s+|>\s*|([-*+]|\d+\.)\s+)/.test(lines[i].trim())
+      !/^(```|\$\$|#{1,3}\s+|>\s*|([-*+]|\d+\.)\s+|!\[[^\]]*\]\(https?:\/\/)/.test(lines[i].trim())
     ) {
       paraLines.push(lines[i].trim());
       i++;
     }
-    push({ kind: "paragraph", text: normalizeInline(paraLines.join(" ")) });
+    push({ kind: "paragraph", text: normalizeInline(stripInlineMarkdown(paraLines.join(" "))) });
   }
 
   if (!blocks.length) {
@@ -353,6 +394,7 @@ export function parsePastedContent(raw: string, explicitTitle?: string): Extract
   const firstProse = blocks.find((b) => b.kind !== "heading") ?? blocks[0];
   return {
     title,
+    ...(siteName ? { siteName } : {}),
     excerpt: firstProse.text.slice(0, 160),
     blocks,
   };

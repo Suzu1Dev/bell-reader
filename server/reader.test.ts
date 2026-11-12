@@ -71,6 +71,34 @@ test("HTML extractor & quote anchor resolver preserve clean blocks and exact off
   const pasted = parsePastedContent("# 測試筆記\n\n第一段文字內容。\n\n- 重點項目一");
   assert.equal(pasted.title, "測試筆記");
   assert.equal(pasted.blocks.length, 2);
+
+  // Raw Markdown embedded inside #publish-page (e.g. HackMD SSR) splits cleanly into blocks
+  const hackmdHtml = `
+    <html>
+      <head><title>SDF 入門 - HackMD</title><meta property="og:site_name" content="HackMD" /></head>
+      <body>
+        <div id="publish-page"># SDF 入門
+
+透過**最近距離**描述幾何邊界。
+
+- d = 0 : 表面
+![示意圖](https://example.com/sdf.webp)
+
+\`\`\`glsl
+float sdBox(vec2 p) { return length(p); }
+\`\`\`
+</div>
+      </body>
+    </html>
+  `;
+  const mdPage = extractBlocksFromHtml(hackmdHtml, new URL("https://hackmd.io/@demo/sdf"));
+  assert.equal(mdPage.title, "SDF 入門");
+  assert.equal(mdPage.siteName, "HackMD");
+  assert.deepEqual(
+    mdPage.blocks.map((b) => b.kind),
+    ["paragraph", "list", "image", "code"],
+  );
+  assert.equal(mdPage.blocks[0].text, "透過最近距離描述幾何邊界。");
 });
 
 test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note retention, and Explain topic bridge", async () => {
