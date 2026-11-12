@@ -112,6 +112,19 @@ export function handBoxPath(rect: BoxRect, seed: string): string {
   return drawableToSvgPath(drawable);
 }
 
+/** Hand-drawn ballpoint circle pin for circling a point on an image or diagram via `roughjs`. */
+export function handPinCirclePath(cx: number, cy: number, radius: number, seed: string): string {
+  const s = seedInt(`pin:${seed}`);
+  const drawable = generator.ellipse(cx, cy, radius * 2, radius * 2, {
+    seed: s,
+    roughness: 0.95,
+    bowing: 0.95,
+    curveFitting: 0.95,
+    disableMultiStroke: true,
+  });
+  return drawableToSvgPath(drawable);
+}
+
 /** Slim ballpoint margin curly bracket via `roughjs`. */
 export function bracketPath(bounds: BoxRect, seed: string): string {
   const s = seedInt(`br:${seed}`);

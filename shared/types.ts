@@ -28,6 +28,8 @@ export interface PageAnnotation {
   label?: string;
   note: string;
   topic?: string;
+  anchorX?: number;
+  anchorY?: number;
   source: "ai" | "user";
   createdAt: string;
 }

@@ -1152,6 +1152,13 @@ select:focus-visible {
   mix-blend-mode: var(--highlighter-blend);
 }
 
+.ink-image-overlay-svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
 .reader-paper {
   position: relative;
   z-index: 3;
@@ -1267,12 +1274,53 @@ select:focus-visible {
   margin: 20px 0;
 }
 
+.reader-figure-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
 .reader-figure img {
   display: block;
   max-width: 100%;
   height: auto;
   border-radius: var(--radius-xs);
   border: 1px solid var(--line);
+  cursor: crosshair;
+}
+
+.figure-pin-hit {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  z-index: 4;
+}
+
+.figure-annotate-hint {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--paper-sheet) 90%, transparent);
+  border: 1px solid var(--line-2);
+  font-size: 11px;
+  color: var(--text-2);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+
+.reader-figure-frame:hover .figure-annotate-hint {
+  opacity: 1;
 }
 
 .reader-figure figcaption {
@@ -1531,6 +1579,26 @@ mark.ink-text-hit.is-active {
   color: var(--reader-on);
 }
 
+.selection-pen-bar.is-image-mode .pen-colors {
+  border-right: none;
+  padding-right: 0;
+}
+
+.pen-image-mode-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  padding-right: 6px;
+  border-right: 1px solid var(--line);
+}
+
+.pen-close-btn {
+  margin-left: auto;
+}
+
 .pen-manual-form {
   display: flex;
   align-items: center;
@@ -1546,6 +1614,11 @@ mark.ink-text-hit.is-active {
   border-radius: var(--radius-xs);
   background: var(--paper-sheet);
   font-size: 12.5px;
+}
+
+.pen-manual-form input.pen-label-input {
+  flex: 0 0 118px;
+  min-width: 0;
 }
 
 /* ── Unified BELL Suite Command Switcher ─────────────────────────────────── */

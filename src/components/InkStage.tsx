@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AudioLines, Braces, Circle, Highlighter, PenLine, Sparkles, Trash2, Underline } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { AudioLines, Braces, Circle, Highlighter, PenLine, Sparkles, Trash2, Underline, X } from "lucide-react";
 import {
   INK_COLORS,
   type InkColor,
@@ -12,6 +12,7 @@ import { explainDraftHref } from "../../shared/suite";
 import {
   bracketPath,
   handBoxPath,
+  handPinCirclePath,
   highlighterPath,
   layoutMarginNotes,
   leaderArrowPath,
@@ -28,6 +29,7 @@ interface MeasuredAnchor {
   bounds: BoxRect;
   firstRect: BoxRect;
   lastRect: BoxRect;
+  spot?: { x: number; y: number };
   blockTextRight: number;
   blockBottom: number;
   blockIsSingleLine: boolean;
@@ -45,6 +47,11 @@ interface PendingSelection {
   quote: string;
   top: number;
   left: number;
+  isImage?: boolean;
+  anchorX?: number;
+  anchorY?: number;
+  spotX?: number;
+  spotY?: number;
 }
 
 const STYLE_LABELS: Record<InkStyle, string> = {
@@ -265,7 +272,24 @@ function arrowEndpoints(
   mode: NotePlacement,
   noteBox: BoxRect,
 ): { ax: number; ay: number; nx: number; ny: number } {
-  const { bounds, lastRect, annotation } = anchor;
+  const { bounds, lastRect, annotation, spot } = anchor;
+
+  if (anchor.blockKind === "image" && spot) {
+    if (mode === "left-margin") {
+      return {
+        ax: spot.x - 13,
+        ay: spot.y,
+        nx: noteBox.left + noteBox.width + 6,
+        ny: noteBox.top + Math.min(18, noteBox.height * 0.4),
+      };
+    }
+    return {
+      ax: spot.x + 13,
+      ay: spot.y,
+      nx: noteBox.left - 6,
+      ny: noteBox.top + Math.min(18, noteBox.height * 0.4),
+    };
+  }
 
   if (mode === "inline-blank") {
     return {
@@ -332,13 +356,17 @@ export default function InkStage({
     quote: string;
     style: InkStyle;
     color: InkColor;
+    label?: string;
     note: string;
+    anchorX?: number;
+    anchorY?: number;
   }) => Promise<void>;
   onDeleteAnnotation: (annotationId: string) => void;
 }) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const paperRef = useRef<HTMLElement | null>(null);
   const blockRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const imageRefs = useRef<Map<string, HTMLImageElement>>(new Map());
   const noteRefs = useRef<Map<string, HTMLElement>>(new Map());
 
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -355,6 +383,7 @@ export default function InkStage({
   const [penStyle, setPenStyle] = useState<InkStyle>("highlight");
   const [penColor, setPenColor] = useState<InkColor>("sky");
   const [manualOpen, setManualOpen] = useState(false);
+  const [manualLabel, setManualLabel] = useState("");
   const [manualNote, setManualNote] = useState("");
 
   const blockKindById = useMemo(() => {
@@ -415,6 +444,51 @@ export default function InkStage({
 
     const nextMeasured: MeasuredAnchor[] = [];
     for (const ann of page.annotations) {
+      const bKind = blockKindById.get(ann.blockId) ?? "paragraph";
+      if (bKind === "image") {
+        const targetEl = imageRefs.current.get(ann.blockId) ?? blockRefs.current.get(ann.blockId);
+        if (!targetEl) continue;
+        const r = targetEl.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) continue;
+        const imgBox: BoxRect = {
+          left: r.left - stageRect.left,
+          top: r.top - stageRect.top,
+          width: r.width,
+          height: r.height,
+        };
+        if (ann.anchorX !== undefined && ann.anchorY !== undefined) {
+          const spotX = imgBox.left + clamp(ann.anchorX, 0.03, 0.97) * imgBox.width;
+          const spotY = imgBox.top + clamp(ann.anchorY, 0.04, 0.96) * imgBox.height;
+          const pinRect: BoxRect = { left: spotX - 13, top: spotY - 13, width: 26, height: 26 };
+          nextMeasured.push({
+            annotation: ann,
+            blockKind: "image",
+            rects: [pinRect],
+            bounds: pinRect,
+            firstRect: pinRect,
+            lastRect: pinRect,
+            spot: { x: spotX, y: spotY },
+            blockTextRight: imgBox.left + imgBox.width,
+            blockBottom: imgBox.top + imgBox.height,
+            blockIsSingleLine: false,
+          });
+        } else {
+          nextMeasured.push({
+            annotation: ann,
+            blockKind: "image",
+            rects: [imgBox],
+            bounds: imgBox,
+            firstRect: imgBox,
+            lastRect: imgBox,
+            spot: { x: imgBox.left + imgBox.width * 0.5, y: imgBox.top + imgBox.height * 0.5 },
+            blockTextRight: imgBox.left + imgBox.width,
+            blockBottom: imgBox.top + imgBox.height,
+            blockIsSingleLine: false,
+          });
+        }
+        continue;
+      }
+
       const blockEl = blockRefs.current.get(ann.blockId);
       if (!blockEl) continue;
       const fullText = blockEl.textContent ?? "";
@@ -530,6 +604,16 @@ export default function InkStage({
     for (const m of ordered) {
       const id = m.annotation.id;
       const noteH = noteHeights[id] ?? 68;
+      if (m.blockKind === "image") {
+        const spotX = m.spot?.x ?? m.bounds.left + m.bounds.width * 0.5;
+        const desiredY = Math.max(4, (m.spot?.y ?? m.bounds.top) - 14);
+        if (spotX < paperSpan.left + paperSpan.width * 0.5) {
+          leftSlots.push({ id, desiredTop: desiredY, height: noteH });
+        } else {
+          rightSlots.push({ id, desiredTop: desiredY, height: noteH });
+        }
+        continue;
+      }
       const isShortHeadingOrItem = m.blockKind === "heading" || m.blockKind === "list";
       const rightGapAfterBlock = paperRight - m.blockTextRight;
 
@@ -600,6 +684,48 @@ export default function InkStage({
     return maxBottom;
   }, [measured, placementMap, noteHeights]);
 
+  useEffect(() => {
+    if (!selection) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelection(null);
+        setManualOpen(false);
+        setManualLabel("");
+        setManualNote("");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selection]);
+
+  const handleImageClick = (e: MouseEvent<HTMLImageElement>, block: ReaderBlock) => {
+    e.stopPropagation();
+    if (!stageRef.current) return;
+    const imgRect = e.currentTarget.getBoundingClientRect();
+    if (imgRect.width < 12 || imgRect.height < 12) return;
+    const stageRect = stageRef.current.getBoundingClientRect();
+    const anchorX = Number(clamp((e.clientX - imgRect.left) / imgRect.width, 0.03, 0.97).toFixed(4));
+    const anchorY = Number(clamp((e.clientY - imgRect.top) / imgRect.height, 0.04, 0.96).toFixed(4));
+    const spotX = imgRect.left - stageRect.left + anchorX * imgRect.width;
+    const spotY = imgRect.top - stageRect.top + anchorY * imgRect.height;
+
+    window.getSelection()?.removeAllRanges();
+    setManualOpen(true);
+    setManualLabel("");
+    setManualNote("");
+    setSelection({
+      blockId: block.id,
+      quote: block.alt || "圖片註記",
+      isImage: true,
+      anchorX,
+      anchorY,
+      spotX,
+      spotY,
+      top: clamp(spotY - 82, 8, Math.max(8, stageRect.height - 110)),
+      left: clamp(spotX - 160, 8, Math.max(8, stageRect.width - 360)),
+    });
+  };
+
   const handleMouseUp = () => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
@@ -619,6 +745,7 @@ export default function InkStage({
     const stageRect = stageRef.current.getBoundingClientRect();
     const selRect = range.getBoundingClientRect();
     setManualOpen(false);
+    setManualLabel("");
     setManualNote("");
     setSelection({
       blockId: node.dataset.blockText,
@@ -669,15 +796,45 @@ export default function InkStage({
         </div>
       );
     } else if (block.kind === "image" && block.imageUrl) {
+      const pinnedAnns = showInk ? blockAnns.filter((a) => a.anchorX !== undefined && a.anchorY !== undefined) : [];
       element = (
-        <figure className="reader-figure">
-          <img
-            src={block.imageUrl}
-            alt={block.alt || ""}
-            decoding="async"
-            referrerPolicy="no-referrer"
-            onLoad={() => recomputeGeometry()}
-          />
+        <figure ref={setRef} data-block-text={block.id} className="reader-figure">
+          <div className="reader-figure-frame">
+            <img
+              ref={(el) => {
+                if (el) imageRefs.current.set(block.id, el);
+                else imageRefs.current.delete(block.id);
+              }}
+              src={block.imageUrl}
+              alt={block.alt || ""}
+              decoding="async"
+              referrerPolicy="no-referrer"
+              onLoad={() => recomputeGeometry()}
+              onClick={(e) => handleImageClick(e, block)}
+              title="點擊圖形任意位置即可用原子筆圈註並拉出箭頭筆記"
+            />
+            {pinnedAnns.map((ann) => (
+              <button
+                key={ann.id}
+                type="button"
+                className={`figure-pin-hit ${activeId === ann.id ? "is-active" : ""}`}
+                style={{
+                  left: `${clamp(ann.anchorX!, 0.03, 0.97) * 100}%`,
+                  top: `${clamp(ann.anchorY!, 0.04, 0.96) * 100}%`,
+                }}
+                aria-label={`查看圖形註解：${ann.label || "圖形註記"} — ${ann.note}`}
+                onMouseEnter={() => setActiveId(ann.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveId(ann.id);
+                }}
+              />
+            ))}
+            <span className="figure-annotate-hint" aria-hidden="true">
+              <PenLine size={11} />
+              <span>點圖任一點下筆記</span>
+            </span>
+          </div>
           {block.alt ? <figcaption>{block.alt}</figcaption> : null}
         </figure>
       );
@@ -774,7 +931,7 @@ export default function InkStage({
           height={Math.max(stageSize.height, railMinHeight)}
           aria-hidden="true"
         >
-          {measured.map((m) => {
+          {measured.filter((m) => m.blockKind !== "image").map((m) => {
             const { annotation, rects, bounds } = m;
             const isActive = activeId === annotation.id;
             const meta = placementMap.get(annotation.id);
@@ -844,36 +1001,142 @@ export default function InkStage({
         </svg>
       ) : null}
 
+      {showInk || selection?.isImage ? (
+        <svg
+          className="ink-image-overlay-svg"
+          width={stageSize.width}
+          height={Math.max(stageSize.height, railMinHeight)}
+          aria-hidden="true"
+        >
+          {showInk
+            ? measured
+                .filter((m) => m.blockKind === "image")
+                .map((m) => {
+                  const { annotation, bounds, spot } = m;
+                  const isActive = activeId === annotation.id;
+                  const meta = placementMap.get(annotation.id);
+                  const box = noteBoxes[annotation.id];
+                  const colorVar = `var(--ink-${annotation.color}-stroke)`;
+                  const arrowPts = isDesktopRail && meta && box ? arrowEndpoints(m, meta.mode, box) : null;
+                  const pinPath =
+                    spot && annotation.anchorX !== undefined
+                      ? handPinCirclePath(spot.x, spot.y, 13, annotation.id)
+                      : handBoxPath(bounds, annotation.id);
+                  const arrowPath = arrowPts
+                    ? leaderArrowPath(arrowPts.ax, arrowPts.ay, arrowPts.nx, arrowPts.ny, annotation.id)
+                    : null;
+
+                  return (
+                    <g key={annotation.id} className={`ink-stroke-group ${isActive ? "is-active" : ""}`}>
+                      {spot && annotation.anchorX !== undefined ? (
+                        <>
+                          <circle cx={spot.x} cy={spot.y} r={3.2} fill="var(--paper-sheet)" opacity={0.88} />
+                          <circle cx={spot.x} cy={spot.y} r={2} fill={colorVar} />
+                        </>
+                      ) : null}
+                      <path
+                        d={pinPath}
+                        fill="none"
+                        stroke="var(--paper-sheet)"
+                        strokeWidth={isActive ? 4.2 : 3.4}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        opacity={0.78}
+                      />
+                      <path
+                        d={pinPath}
+                        fill="none"
+                        stroke={colorVar}
+                        strokeWidth={isActive ? 2.0 : 1.55}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      {arrowPath ? (
+                        <>
+                          <path
+                            d={arrowPath}
+                            fill="none"
+                            stroke="var(--paper-sheet)"
+                            strokeWidth={isActive ? 3.2 : 2.6}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            opacity={0.78}
+                          />
+                          <path
+                            d={arrowPath}
+                            fill="none"
+                            stroke={colorVar}
+                            strokeWidth={isActive ? 1.55 : 1.2}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            opacity={isActive ? 0.98 : 0.78}
+                          />
+                        </>
+                      ) : null}
+                    </g>
+                  );
+                })
+            : null}
+          {selection?.isImage && selection.spotX !== undefined && selection.spotY !== undefined ? (
+            <g>
+              <circle cx={selection.spotX} cy={selection.spotY} r={3} fill={`var(--ink-${penColor}-stroke)`} />
+              <path
+                d={handPinCirclePath(selection.spotX, selection.spotY, 13, `preview-${selection.blockId}`)}
+                fill="none"
+                stroke="var(--paper-sheet)"
+                strokeWidth={3.6}
+                opacity={0.85}
+              />
+              <path
+                d={handPinCirclePath(selection.spotX, selection.spotY, 13, `preview-${selection.blockId}`)}
+                fill="none"
+                stroke={`var(--ink-${penColor}-stroke)`}
+                strokeWidth={1.7}
+                strokeDasharray="3 2"
+              />
+            </g>
+          ) : null}
+        </svg>
+      ) : null}
+
       {selection ? (
         <div
-          className="selection-pen-bar"
+          className={`selection-pen-bar ${selection.isImage ? "is-image-mode" : ""}`}
           style={{ top: `${selection.top}px`, left: `${selection.left}px` }}
           onMouseDown={(e) => e.stopPropagation()}
           onMouseUp={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
         >
           <div className="pen-bar-row">
-            <div className="pen-styles" role="group" aria-label="筆觸樣式">
-              {(
-                [
-                  ["highlight", Highlighter],
-                  ["underline", Underline],
-                  ["box", Circle],
-                  ["bracket", Braces],
-                ] as const
-              ).map(([style, Icon]) => (
-                <button
-                  key={style}
-                  type="button"
-                  className={`pen-icon-btn ${penStyle === style ? "is-selected" : ""}`}
-                  title={STYLE_LABELS[style]}
-                  aria-label={STYLE_LABELS[style]}
-                  aria-pressed={penStyle === style}
-                  onClick={() => setPenStyle(style)}
-                >
-                  <Icon size={14} aria-hidden="true" />
-                </button>
-              ))}
-            </div>
+            {selection.isImage ? (
+              <span className="pen-image-mode-title">
+                <PenLine size={12} aria-hidden="true" />
+                <span>圖形原子筆筆記</span>
+              </span>
+            ) : (
+              <div className="pen-styles" role="group" aria-label="筆觸樣式">
+                {(
+                  [
+                    ["highlight", Highlighter],
+                    ["underline", Underline],
+                    ["box", Circle],
+                    ["bracket", Braces],
+                  ] as const
+                ).map(([style, Icon]) => (
+                  <button
+                    key={style}
+                    type="button"
+                    className={`pen-icon-btn ${penStyle === style ? "is-selected" : ""}`}
+                    title={STYLE_LABELS[style]}
+                    aria-label={STYLE_LABELS[style]}
+                    aria-pressed={penStyle === style}
+                    onClick={() => setPenStyle(style)}
+                  >
+                    <Icon size={14} aria-hidden="true" />
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="pen-colors" role="group" aria-label="筆水顏色">
               {INK_COLORS.map((c) => (
                 <button
@@ -887,33 +1150,51 @@ export default function InkStage({
                 />
               ))}
             </div>
-            <button
-              type="button"
-              className="pen-action-btn is-primary"
-              disabled={selectionBusy}
-              onClick={async () => {
-                const target = selection;
-                setSelection(null);
-                window.getSelection()?.removeAllRanges();
-                await onAiSelection({
-                  blockId: target.blockId,
-                  quote: target.quote,
-                  style: penStyle,
-                  color: penColor,
-                });
-              }}
-            >
-              <Sparkles size={13} aria-hidden="true" />
-              <span>{selectionBusy ? "標註中…" : "AI 說明"}</span>
-            </button>
-            <button
-              type="button"
-              className="pen-action-btn"
-              onClick={() => setManualOpen((v) => !v)}
-            >
-              <PenLine size={13} aria-hidden="true" />
-              <span>手寫批註</span>
-            </button>
+            {!selection.isImage ? (
+              <>
+                <button
+                  type="button"
+                  className="pen-action-btn is-primary"
+                  disabled={selectionBusy}
+                  onClick={async () => {
+                    const target = selection;
+                    setSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                    await onAiSelection({
+                      blockId: target.blockId,
+                      quote: target.quote,
+                      style: penStyle,
+                      color: penColor,
+                    });
+                  }}
+                >
+                  <Sparkles size={13} aria-hidden="true" />
+                  <span>{selectionBusy ? "標註中…" : "AI 說明"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="pen-action-btn"
+                  onClick={() => setManualOpen((v) => !v)}
+                >
+                  <PenLine size={13} aria-hidden="true" />
+                  <span>手寫批註</span>
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="pen-icon-btn pen-close-btn"
+                aria-label="取消圖形筆記"
+                onClick={() => {
+                  setSelection(null);
+                  setManualOpen(false);
+                  setManualLabel("");
+                  setManualNote("");
+                }}
+              >
+                <X size={13} aria-hidden="true" />
+              </button>
+            )}
           </div>
           {manualOpen ? (
             <form
@@ -923,24 +1204,41 @@ export default function InkStage({
                 if (!manualNote.trim()) return;
                 const target = selection;
                 const text = manualNote.trim();
+                const label = manualLabel.trim() || (target.isImage ? "圖形註記" : undefined);
                 setSelection(null);
                 setManualOpen(false);
+                setManualLabel("");
                 setManualNote("");
                 window.getSelection()?.removeAllRanges();
                 await onManualSelection({
                   blockId: target.blockId,
                   quote: target.quote,
-                  style: penStyle,
+                  style: target.isImage ? "box" : penStyle,
                   color: penColor,
+                  ...(label ? { label } : {}),
                   note: text,
+                  ...(target.isImage && target.anchorX !== undefined && target.anchorY !== undefined
+                    ? { anchorX: target.anchorX, anchorY: target.anchorY }
+                    : {}),
                 });
               }}
             >
+              {selection.isImage ? (
+                <input
+                  type="text"
+                  className="pen-label-input"
+                  value={manualLabel}
+                  onChange={(e) => setManualLabel(e.target.value)}
+                  placeholder="標籤（如：重點）"
+                  aria-label="圖形標籤"
+                  maxLength={16}
+                />
+              ) : null}
               <input
                 type="text"
                 value={manualNote}
                 onChange={(e) => setManualNote(e.target.value)}
-                placeholder="寫下頁邊筆記…"
+                placeholder={selection.isImage ? "寫下對這個圖形／結果的附註或注意事項…" : "寫下頁邊筆記…"}
                 aria-label="頁邊筆記內容"
                 maxLength={300}
                 autoFocus

@@ -269,6 +269,43 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
     assert.equal(today.counts.saved, 1);
     assert.equal(today.counts.annotated, 1);
     assert.equal(today.items[0].href, `#/page/${body1.page.id}`);
+
+    // 6. Image block annotation stores normalized coordinates on a figure
+    const imgPageRes = await fetch(`${srv.url}/api/pages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "圖表實驗頁",
+        content: "實驗結果圖表：\n\n![Benchmark Graph](https://example.com/chart.png)",
+      }),
+    });
+    assert.equal(imgPageRes.status, 201);
+    const imgPageBody = (await imgPageRes.json()) as {
+      page: { id: string; blocks: Array<{ id: string; kind: string }> };
+    };
+    const imgBlock = imgPageBody.page.blocks.find((b) => b.kind === "image");
+    assert.ok(imgBlock);
+    const imgAnnRes = await fetch(`${srv.url}/api/pages/${imgPageBody.page.id}/annotations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        blockId: imgBlock.id,
+        quote: "Benchmark Graph",
+        style: "box",
+        color: "coral",
+        label: "指令峰值",
+        note: "注意右側延遲突然拉高",
+        anchorX: 0.72,
+        anchorY: 0.34,
+      }),
+    });
+    assert.equal(imgAnnRes.status, 201);
+    const imgAnnBody = (await imgAnnRes.json()) as {
+      annotation: { anchorX?: number; anchorY?: number; label?: string };
+    };
+    assert.equal(imgAnnBody.annotation.anchorX, 0.72);
+    assert.equal(imgAnnBody.annotation.anchorY, 0.34);
+    assert.equal(imgAnnBody.annotation.label, "指令峰值");
   } finally {
     await srv.close();
     store.close();

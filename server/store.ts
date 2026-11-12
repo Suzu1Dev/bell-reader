@@ -51,6 +51,8 @@ interface AnnotationRow {
   label: string | null;
   note: string;
   topic: string | null;
+  anchor_x: number | null;
+  anchor_y: number | null;
   source: "ai" | "user";
   created_at: string;
 }
@@ -105,6 +107,8 @@ export class ReaderStore {
         label TEXT,
         note TEXT NOT NULL,
         topic TEXT,
+        anchor_x REAL,
+        anchor_y REAL,
         source TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
@@ -116,6 +120,11 @@ export class ReaderStore {
         json TEXT NOT NULL
       );
     `);
+
+    const cols = this.db.prepare("PRAGMA table_info(annotations)").all() as Array<{ name: string }>;
+    const colNames = new Set(cols.map((c) => c.name));
+    if (!colNames.has("anchor_x")) this.db.exec("ALTER TABLE annotations ADD COLUMN anchor_x REAL");
+    if (!colNames.has("anchor_y")) this.db.exec("ALTER TABLE annotations ADD COLUMN anchor_y REAL");
   }
 
   close(): void {
@@ -250,6 +259,7 @@ export class ReaderStore {
       ...(row.label ? { label: row.label } : {}),
       note: row.note,
       ...(row.topic ? { topic: row.topic } : {}),
+      ...(row.anchor_x !== null && row.anchor_y !== null ? { anchorX: row.anchor_x, anchorY: row.anchor_y } : {}),
       source: row.source,
       createdAt: row.created_at,
     };
@@ -444,8 +454,8 @@ export class ReaderStore {
     this.db
       .prepare(`
         INSERT INTO annotations (
-          id, page_id, block_id, quote, start_offset, end_offset, style, color, label, note, topic, source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, page_id, block_id, quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -459,6 +469,8 @@ export class ReaderStore {
         item.label ?? null,
         item.note.slice(0, 320),
         item.topic ? item.topic.slice(0, 40) : null,
+        item.anchorX ?? null,
+        item.anchorY ?? null,
         item.source,
         now,
       );

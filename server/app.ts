@@ -74,6 +74,8 @@ const manualAnnotationSchema = z
     label: z.string().trim().max(16).optional(),
     note: z.string().trim().min(1).max(320),
     topic: z.string().trim().max(28).optional(),
+    anchorX: z.number().min(0).max(1).optional(),
+    anchorY: z.number().min(0).max(1).optional(),
   })
   .strict();
 
@@ -430,7 +432,14 @@ export function createApp(options: CreateAppOptions) {
 
     const block = page.blocks.find((b) => b.id === parsed.data.blockId);
     if (!block) throw new AppError(400, "找不到對應段落。");
-    const anchor = resolveQuoteAnchor(block.text, parsed.data.quote);
+    const isImage = block.kind === "image";
+    const anchor = isImage
+      ? {
+          exactQuote: parsed.data.quote || block.alt || block.text || "圖片註記",
+          startOffset: 0,
+          endOffset: block.text.length,
+        }
+      : resolveQuoteAnchor(block.text, parsed.data.quote);
     if (!anchor) throw new AppError(400, "選取文字無法對齊段落內容。");
 
     const created = store.addAnnotation(page.id, {
@@ -443,6 +452,9 @@ export function createApp(options: CreateAppOptions) {
       ...(parsed.data.label ? { label: parsed.data.label } : {}),
       note: parsed.data.note,
       ...(parsed.data.topic ? { topic: parsed.data.topic } : {}),
+      ...(isImage && parsed.data.anchorX !== undefined && parsed.data.anchorY !== undefined
+        ? { anchorX: parsed.data.anchorX, anchorY: parsed.data.anchorY }
+        : {}),
       source: "user",
     });
     res.status(201).json({ annotation: created, page: store.getPage(page.id)! });

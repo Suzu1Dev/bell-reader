@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   bracketPath,
   handBoxPath,
+  handPinCirclePath,
   highlighterPath,
   layoutMarginNotes,
   leaderArrowPath,
@@ -24,6 +25,8 @@ test("Rough.js & perfect-freehand paths are deterministic and valid SVG path str
   assert.equal(wavyUnderlinePath(rect, "ann-1:0"), wavyUnderlinePath(rect, "ann-1:0"));
   assert.ok(handBoxPath(rect, "ann-1:0").startsWith("M"));
   assert.ok(handBoxPath(shortRect, "ann-1:1").includes("C"));
+  assert.ok(handPinCirclePath(120, 90, 13, "img-1").includes("C"));
+  assert.equal(handPinCirclePath(120, 90, 13, "img-1"), handPinCirclePath(120, 90, 13, "img-1"));
   assert.ok(bracketPath(rect, "ann-1").includes("C"));
   assert.ok(leaderArrowPath(220, 130, 720, 145, "ann-1").includes("C"));
 });
