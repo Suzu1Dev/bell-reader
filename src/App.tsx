@@ -14,8 +14,10 @@ import {
   FolderPlus,
   Globe,
   Highlighter,
+  Layers,
   Moon,
   MoreHorizontal,
+  PanelLeft,
   Plus,
   RefreshCw,
   Settings,
@@ -112,6 +114,8 @@ export default function App() {
     return saved === "serif" ? "serif" : "sans";
   });
   const [hash, setHash] = useState<string>(() => window.location.hash || "#/");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -191,6 +195,7 @@ export default function App() {
     const onHash = () => {
       setHash(window.location.hash || "#/");
       setMoreMenuOpen(false);
+      setMobileSidebarOpen(false);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -520,8 +525,25 @@ export default function App() {
     );
   };
 
+  const libraryTitle =
+    route.kind === "library"
+      ? route.folderId === "__unfiled__"
+        ? "未歸檔"
+        : route.folderId
+          ? folders.find((f) => f.id === route.folderId)?.name || "資料夾"
+          : "全部保存"
+      : "閱讀書庫";
+
+  const handleToggleSidebar = () => {
+    if (window.matchMedia("(max-width: 900px)").matches) {
+      setMobileSidebarOpen((v) => !v);
+    } else {
+      setSidebarCollapsed((v) => !v);
+    }
+  };
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
       {route.kind === "page" && scrollProgress > 0 ? (
         <div
           className="reading-progress-bar"
@@ -538,8 +560,19 @@ export default function App() {
         onRetry={loadManifest}
       />
 
-      <header className="app-topbar">
-        <div className="topbar-left">
+      {mobileSidebarOpen ? (
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setMobileSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      ) : null}
+
+      <aside
+        className={`app-sidebar ${mobileSidebarOpen ? "is-open" : ""}`}
+        aria-label="側邊導覽與書庫"
+      >
+        <div className="sidebar-head">
           <button
             type="button"
             className="suite-brand-btn"
@@ -554,60 +587,337 @@ export default function App() {
             </span>
             <ChevronDown size={13} className="brand-chevron" aria-hidden="true" />
           </button>
+        </div>
 
-          <nav className="topbar-nav" aria-label="主要導覽">
-            {route.kind === "page" ? (
-              <a href="#/library" className="topbar-link is-back">
-                <ArrowLeft size={14} aria-hidden="true" />
-                <span>書庫</span>
-              </a>
-            ) : null}
+        <div className="sidebar-scroll">
+          <nav className="sidebar-nav" aria-label="主要功能">
             <a
               href="#/"
-              className={`topbar-link ${route.kind === "home" || route.kind === "handoff" ? "is-active" : ""}`}
+              className={`nav-row ${route.kind === "home" || route.kind === "handoff" ? "is-active" : ""}`}
             >
-              <Plus size={13} aria-hidden="true" />
-              <span>新增</span>
+              <Plus size={14} aria-hidden="true" />
+              <span>新增閱讀</span>
             </a>
             <a
               href="#/library"
-              className={`topbar-link ${route.kind === "library" ? "is-active" : ""}`}
+              className={`nav-row ${route.kind === "library" && !route.folderId ? "is-active" : ""}`}
             >
-              <span>書庫</span>
-              <span className="topbar-count">{pages.length}</span>
+              <FileText size={14} aria-hidden="true" />
+              <span>全部保存</span>
+              <span className="nav-count">{pages.length}</span>
             </a>
             <a
               href="#/topics"
-              className={`topbar-link ${route.kind === "topics" ? "is-active" : ""}`}
+              className={`nav-row ${route.kind === "topics" ? "is-active" : ""}`}
             >
-              <span>主題</span>
+              <Layers size={14} aria-hidden="true" />
+              <span>主題歸納</span>
             </a>
           </nav>
+
+          <section className="sidebar-section" aria-label="資料夾分類">
+            <div className="rail-head">
+              <span>資料夾</span>
+              <button
+                type="button"
+                className="icon-ghost-btn is-xs"
+                aria-label="新增資料夾"
+                title="新增資料夾"
+                onClick={() => setNewFolderOpen((v) => !v)}
+              >
+                <FolderPlus size={14} aria-hidden="true" />
+              </button>
+            </div>
+
+            {newFolderOpen ? (
+              <form className="new-folder-form" onSubmit={handleCreateFolder}>
+                <input
+                  type="text"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  placeholder="資料夾名稱…"
+                  aria-label="資料夾名稱"
+                  maxLength={40}
+                  autoFocus
+                />
+                <div className="new-folder-actions">
+                  <div className="folder-color-row">
+                    {INK_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        className={`pen-color-dot dot-${c} ${newFolderColor === c ? "is-selected" : ""}`}
+                        aria-label={c}
+                        onClick={() => setNewFolderColor(c)}
+                      />
+                    ))}
+                  </div>
+                  <button type="submit" className="btn-xs-primary">
+                    建立
+                  </button>
+                </div>
+              </form>
+            ) : null}
+
+            <a
+              href="#/folder/__unfiled__"
+              className={`nav-row ${route.kind === "library" && route.folderId === "__unfiled__" ? "is-active" : ""}`}
+            >
+              <span className="folder-dot is-unfiled" aria-hidden="true" />
+              <span className="folder-name">未歸檔</span>
+              <span className="nav-count">{pages.filter((p) => !p.folderId).length}</span>
+            </a>
+
+            {folders.map((folder) => {
+              const active = route.kind === "library" && route.folderId === folder.id;
+              return (
+                <div key={folder.id} className={`nav-row folder-row ${active ? "is-active" : ""}`}>
+                  <a href={`#/folder/${encodeURIComponent(folder.id)}`} className="folder-row-link">
+                    <span className={`folder-dot dot-${folder.color}`} aria-hidden="true" />
+                    <span className="folder-name">
+                      <bdi>{folder.name}</bdi>
+                    </span>
+                    <span className="nav-count">{folder.pageCount}</span>
+                  </a>
+                  <button
+                    type="button"
+                    className="folder-del-btn"
+                    aria-label={`刪除資料夾 ${folder.name}`}
+                    title="刪除資料夾（保留頁面）"
+                    onClick={async () => {
+                      await apiWrite("DELETE", `/api/folders/${encodeURIComponent(folder.id)}`);
+                      await loadLibrary();
+                      if (active) window.location.hash = "#/library";
+                    }}
+                  >
+                    <X size={12} aria-hidden="true" />
+                  </button>
+                </div>
+              );
+            })}
+          </section>
         </div>
 
-        <div className="topbar-right">
+        <div className="sidebar-footer">
           <button
             type="button"
-            className="icon-ghost-btn"
-            aria-label={theme === "dark" ? "切換亮色紙張" : "切換暗色畫室"}
-            title={theme === "dark" ? "切換亮色紙張" : "切換暗色畫室"}
+            className="nav-row sidebar-action-row"
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
           >
-            {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+            {theme === "dark" ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
+            <span>{theme === "dark" ? "亮色紙張" : "暗色畫室"}</span>
           </button>
           <button
             type="button"
-            className="icon-ghost-btn"
-            aria-label="模型與歸檔設定"
-            title="設定"
+            className="nav-row sidebar-action-row"
             onClick={() => setSettingsOpen(true)}
           >
-            <Settings size={15} />
+            <Settings size={14} aria-hidden="true" />
+            <span>模型與設定</span>
           </button>
         </div>
-      </header>
+      </aside>
 
       <main className="app-main">
+        <header className="main-topbar">
+          <div className="main-topbar-left">
+            <button
+              type="button"
+              className="icon-ghost-btn sidebar-toggle-btn"
+              aria-label={sidebarCollapsed ? "展開側邊欄" : "收合側邊欄"}
+              title={sidebarCollapsed ? "展開側邊欄" : "收合側邊欄"}
+              onClick={handleToggleSidebar}
+            >
+              <PanelLeft size={15} aria-hidden="true" />
+            </button>
+
+            {(route.kind === "home" || route.kind === "handoff") && (
+              <span className="topbar-section-title">閱讀書桌</span>
+            )}
+
+            {route.kind === "library" && (
+              <div className="topbar-title-group">
+                <span className="topbar-section-title">
+                  <bdi>{libraryTitle}</bdi>
+                </span>
+                <span className="topbar-count-pill">{filteredPages.length}</span>
+              </div>
+            )}
+
+            {route.kind === "topics" && (
+              <span className="topbar-section-title">主題歸納與 BELL Explain 連通</span>
+            )}
+
+            {route.kind === "page" && activePage && (
+              <div className="topbar-reader-meta">
+                <label className="folder-select-wrap is-compact">
+                  <FolderIcon size={13} aria-hidden="true" />
+                  <select
+                    value={activePage.folderId ?? ""}
+                    aria-label="移動資料夾"
+                    onChange={async (e) => {
+                      const nextFolder = e.target.value || null;
+                      const updated = await apiWrite<SavedPage>(
+                        "PATCH",
+                        `/api/pages/${encodeURIComponent(activePage.id)}`,
+                        { folderId: nextFolder },
+                      );
+                      setActivePage(updated);
+                      await loadLibrary();
+                    }}
+                  >
+                    <option value="">未歸檔</option>
+                    {folders.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span className="reader-topic-label">
+                  <bdi>{activePage.topic}</bdi>
+                </span>
+              </div>
+            )}
+          </div>
+
+          <div className="main-topbar-right">
+            {route.kind === "library" && (
+              <input
+                type="search"
+                className="search-input is-topbar"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="搜尋標題、主題或標籤…"
+                aria-label="搜尋保存頁面"
+              />
+            )}
+
+            {route.kind === "topics" && suiteLinks.explain && (
+              <a href={`${suiteLinks.explain}/`} className="btn-explain-chip">
+                <AudioLines size={14} aria-hidden="true" />
+                <span>開啟 BELL Explain</span>
+              </a>
+            )}
+
+            {route.kind === "page" && activePage && (
+              <>
+                <div className="reader-quiet-group" role="group" aria-label="閱讀選項">
+                  <button
+                    type="button"
+                    className="icon-ghost-btn"
+                    onClick={() => setReadingFont((f) => (f === "sans" ? "serif" : "sans"))}
+                    title={readingFont === "sans" ? "切換書卷襯線體" : "切換現代黑體"}
+                  >
+                    <Type size={14} aria-hidden="true" />
+                    <span>{readingFont === "sans" ? "襯線" : "黑體"}</span>
+                  </button>
+
+                  {activePage.annotations.length > 0 ? (
+                    <button
+                      type="button"
+                      className="icon-ghost-btn"
+                      onClick={() => setShowInk((v) => !v)}
+                      aria-pressed={showInk}
+                      title={showInk ? "暫時隱藏塗鴉" : "顯示塗鴉筆跡"}
+                    >
+                      {showInk ? <EyeOff size={14} /> : <Eye size={14} />}
+                      <span>{showInk ? "藏筆跡" : "顯筆跡"}</span>
+                    </button>
+                  ) : null}
+
+                  {pageToExplainHref ? (
+                    <a
+                      href={pageToExplainHref}
+                      className="icon-ghost-btn is-explain-link"
+                      title="傳送到 BELL Explain 深入理解"
+                    >
+                      <AudioLines size={14} aria-hidden="true" />
+                      <span>Explain</span>
+                    </a>
+                  ) : null}
+
+                  <div className="more-menu-wrap" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="icon-ghost-btn"
+                      aria-label="更多頁面操作"
+                      aria-expanded={moreMenuOpen}
+                      onClick={() => setMoreMenuOpen((v) => !v)}
+                    >
+                      <MoreHorizontal size={15} />
+                    </button>
+                    {moreMenuOpen ? (
+                      <div className="more-popover" role="menu">
+                        {activePage.url ? (
+                          <a
+                            href={activePage.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="more-menu-item"
+                            role="menuitem"
+                            onClick={() => setMoreMenuOpen(false)}
+                          >
+                            <ExternalLink size={13} aria-hidden="true" />
+                            <span>開啟原始網頁</span>
+                          </a>
+                        ) : null}
+                        {pageToPersonalHref ? (
+                          <a
+                            href={pageToPersonalHref}
+                            className="more-menu-item"
+                            role="menuitem"
+                            onClick={() => setMoreMenuOpen(false)}
+                          >
+                            <CheckSquare size={13} aria-hidden="true" />
+                            <span>轉成 BELL Personal 待辦</span>
+                          </a>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="more-menu-item is-danger"
+                          role="menuitem"
+                          onClick={async () => {
+                            setMoreMenuOpen(false);
+                            await apiWrite("DELETE", `/api/pages/${encodeURIComponent(activePage.id)}`);
+                            await loadLibrary();
+                            window.location.hash = "#/library";
+                          }}
+                        >
+                          <Trash2 size={13} aria-hidden="true" />
+                          <span>刪除此保存頁面</span>
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                {activePage.annotatedAt ? (
+                  <button
+                    type="button"
+                    className="btn-secondary is-compact"
+                    disabled={annotating}
+                    onClick={handleAnnotatePage}
+                    title="重新執行 AI 塗鴉標註（保留手寫批註）"
+                  >
+                    <RefreshCw size={13} className={annotating ? "spin" : ""} />
+                    <span>{annotating ? "標註中…" : "重跑標註"}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn-primary is-compact"
+                    disabled={annotating}
+                    onClick={handleAnnotatePage}
+                  >
+                    <Sparkles size={13} className={annotating ? "spin" : ""} />
+                    <span>{annotating ? "標註中…" : "AI 塗鴉標註"}</span>
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </header>
 
         {notice ? (
           <div className={`status-banner is-${notice.kind}`} role="status">
@@ -746,142 +1056,22 @@ export default function App() {
         )}
 
         {route.kind === "library" && (
-          <div className="workspace-container is-wide">
-            <div className="library-header">
-              <h1>
-                {route.folderId === "__unfiled__"
-                  ? "未歸檔"
-                  : route.folderId
-                    ? folders.find((f) => f.id === route.folderId)?.name || "資料夾"
-                    : "閱讀書庫"}
-              </h1>
-              <input
-                type="search"
-                className="search-input"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="搜尋標題、主題或標籤…"
-                aria-label="搜尋保存頁面"
-              />
-            </div>
-
-            <div className="library-layout">
-              <aside className="library-folders-rail" aria-label="資料夾分類">
-                <div className="rail-head">
-                  <span>資料夾</span>
-                  <button
-                    type="button"
-                    className="icon-ghost-btn"
-                    aria-label="新增資料夾"
-                    title="新增資料夾"
-                    onClick={() => setNewFolderOpen((v) => !v)}
-                  >
-                    <FolderPlus size={14} aria-hidden="true" />
-                  </button>
-                </div>
-
-                {newFolderOpen ? (
-                  <form className="new-folder-form" onSubmit={handleCreateFolder}>
-                    <input
-                      type="text"
-                      value={newFolderName}
-                      onChange={(e) => setNewFolderName(e.target.value)}
-                      placeholder="資料夾名稱…"
-                      aria-label="資料夾名稱"
-                      maxLength={40}
-                      autoFocus
-                    />
-                    <div className="new-folder-actions">
-                      <div className="folder-color-row">
-                        {INK_COLORS.map((c) => (
-                          <button
-                            key={c}
-                            type="button"
-                            className={`pen-color-dot dot-${c} ${newFolderColor === c ? "is-selected" : ""}`}
-                            aria-label={c}
-                            onClick={() => setNewFolderColor(c)}
-                          />
-                        ))}
-                      </div>
-                      <button type="submit" className="btn-xs-primary">
-                        建立
-                      </button>
-                    </div>
-                  </form>
-                ) : null}
-
-                <a
-                  href="#/library"
-                  className={`nav-row ${!route.folderId ? "is-active" : ""}`}
-                >
-                  <span>全部頁面</span>
-                  <span className="nav-count">{pages.length}</span>
+          <div className="workspace-container is-library">
+            {filteredPages.length === 0 ? (
+              <div className="empty-box">
+                <p>目前沒有符合條件的頁面。</p>
+                <a href="#/" className="btn-primary">
+                  新增頁面
                 </a>
-                <a
-                  href="#/folder/__unfiled__"
-                  className={`nav-row ${route.folderId === "__unfiled__" ? "is-active" : ""}`}
-                >
-                  <span>未歸檔</span>
-                  <span className="nav-count">{pages.filter((p) => !p.folderId).length}</span>
-                </a>
-                {folders.map((folder) => {
-                  const active = route.folderId === folder.id;
-                  return (
-                    <div key={folder.id} className={`nav-row folder-row ${active ? "is-active" : ""}`}>
-                      <a href={`#/folder/${encodeURIComponent(folder.id)}`} className="folder-row-link">
-                        <span className={`folder-dot dot-${folder.color}`} aria-hidden="true" />
-                        <span className="folder-name">
-                          <bdi>{folder.name}</bdi>
-                        </span>
-                        <span className="nav-count">{folder.pageCount}</span>
-                      </a>
-                      <button
-                        type="button"
-                        className="folder-del-btn"
-                        aria-label={`刪除資料夾 ${folder.name}`}
-                        title="刪除資料夾（保留頁面）"
-                        onClick={async () => {
-                          await apiWrite("DELETE", `/api/folders/${encodeURIComponent(folder.id)}`);
-                          await loadLibrary();
-                          if (active) window.location.hash = "#/library";
-                        }}
-                      >
-                        <X size={12} aria-hidden="true" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </aside>
-
-              <div className="library-list-col">
-                {filteredPages.length === 0 ? (
-                  <div className="empty-box">
-                    <p>目前沒有符合條件的頁面。</p>
-                    <a href="#/" className="btn-primary">
-                      新增頁面
-                    </a>
-                  </div>
-                ) : (
-                  <div className="article-index">{filteredPages.map(renderPageCard)}</div>
-                )}
               </div>
-            </div>
+            ) : (
+              <div className="article-index">{filteredPages.map(renderPageCard)}</div>
+            )}
           </div>
         )}
 
         {route.kind === "topics" && (
-          <div className="workspace-container">
-            <div className="library-header">
-              <div>
-                <h1>主題歸納與 BELL Explain 連通</h1>
-              </div>
-              {suiteLinks.explain ? (
-                <a href={`${suiteLinks.explain}/`} className="btn-explain-chip">
-                  <AudioLines size={14} aria-hidden="true" />
-                  <span>開啟 BELL Explain</span>
-                </a>
-              ) : null}
-            </div>
+          <div className="workspace-container is-topics">
             {topicGroups.length === 0 ? (
               <div className="empty-box">
                 <p>保存網頁並執行 AI 塗鴉標註後，會自動依主題歸納並配對 Explain 筆記。</p>
@@ -964,153 +1154,6 @@ export default function App() {
               </div>
             ) : activePage ? (
               <>
-                <div className="reader-toolbar">
-                  <div className="reader-toolbar-left">
-                    <label className="folder-select-wrap is-compact">
-                      <FolderIcon size={13} aria-hidden="true" />
-                      <select
-                        value={activePage.folderId ?? ""}
-                        aria-label="移動資料夾"
-                        onChange={async (e) => {
-                          const nextFolder = e.target.value || null;
-                          const updated = await apiWrite<SavedPage>(
-                            "PATCH",
-                            `/api/pages/${encodeURIComponent(activePage.id)}`,
-                            { folderId: nextFolder },
-                          );
-                          setActivePage(updated);
-                          await loadLibrary();
-                        }}
-                      >
-                        <option value="">未歸檔</option>
-                        {folders.map((f) => (
-                          <option key={f.id} value={f.id}>
-                            {f.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <span className="reader-topic-label">
-                      <bdi>{activePage.topic}</bdi>
-                    </span>
-                  </div>
-
-                  <div className="reader-toolbar-right">
-                    <div className="reader-quiet-group" role="group" aria-label="閱讀選項">
-                      <button
-                        type="button"
-                        className="icon-ghost-btn"
-                        onClick={() => setReadingFont((f) => (f === "sans" ? "serif" : "sans"))}
-                        title={readingFont === "sans" ? "切換書卷襯線體" : "切換現代黑體"}
-                      >
-                        <Type size={14} aria-hidden="true" />
-                        <span>{readingFont === "sans" ? "襯線" : "黑體"}</span>
-                      </button>
-
-                      {activePage.annotations.length > 0 ? (
-                        <button
-                          type="button"
-                          className="icon-ghost-btn"
-                          onClick={() => setShowInk((v) => !v)}
-                          aria-pressed={showInk}
-                          title={showInk ? "暫時隱藏塗鴉" : "顯示塗鴉筆跡"}
-                        >
-                          {showInk ? <EyeOff size={14} /> : <Eye size={14} />}
-                          <span>{showInk ? "藏筆跡" : "顯筆跡"}</span>
-                        </button>
-                      ) : null}
-
-                      {pageToExplainHref ? (
-                        <a
-                          href={pageToExplainHref}
-                          className="icon-ghost-btn is-explain-link"
-                          title="傳送到 BELL Explain 深入理解"
-                        >
-                          <AudioLines size={14} aria-hidden="true" />
-                          <span>Explain</span>
-                        </a>
-                      ) : null}
-
-                      <div className="more-menu-wrap" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          className="icon-ghost-btn"
-                          aria-label="更多頁面操作"
-                          aria-expanded={moreMenuOpen}
-                          onClick={() => setMoreMenuOpen((v) => !v)}
-                        >
-                          <MoreHorizontal size={15} />
-                        </button>
-                        {moreMenuOpen ? (
-                          <div className="more-popover" role="menu">
-                            {activePage.url ? (
-                              <a
-                                href={activePage.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="more-menu-item"
-                                role="menuitem"
-                                onClick={() => setMoreMenuOpen(false)}
-                              >
-                                <ExternalLink size={13} aria-hidden="true" />
-                                <span>開啟原始網頁</span>
-                              </a>
-                            ) : null}
-                            {pageToPersonalHref ? (
-                              <a
-                                href={pageToPersonalHref}
-                                className="more-menu-item"
-                                role="menuitem"
-                                onClick={() => setMoreMenuOpen(false)}
-                              >
-                                <CheckSquare size={13} aria-hidden="true" />
-                                <span>轉成 BELL Personal 待辦</span>
-                              </a>
-                            ) : null}
-                            <button
-                              type="button"
-                              className="more-menu-item is-danger"
-                              role="menuitem"
-                              onClick={async () => {
-                                setMoreMenuOpen(false);
-                                await apiWrite("DELETE", `/api/pages/${encodeURIComponent(activePage.id)}`);
-                                await loadLibrary();
-                                window.location.hash = "#/library";
-                              }}
-                            >
-                              <Trash2 size={13} aria-hidden="true" />
-                              <span>刪除此保存頁面</span>
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    {activePage.annotatedAt ? (
-                      <button
-                        type="button"
-                        className="btn-secondary is-compact"
-                        disabled={annotating}
-                        onClick={handleAnnotatePage}
-                        title="重新執行 AI 塗鴉標註（保留手寫批註）"
-                      >
-                        <RefreshCw size={13} className={annotating ? "spin" : ""} />
-                        <span>{annotating ? "標註中…" : "重跑標註"}</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="btn-primary is-compact"
-                        disabled={annotating}
-                        onClick={handleAnnotatePage}
-                      >
-                        <Sparkles size={13} className={annotating ? "spin" : ""} />
-                        <span>{annotating ? "標註中…" : "AI 塗鴉標註"}</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-
                 <AnimatePresence>
                   {annotating ? (
                     <motion.div

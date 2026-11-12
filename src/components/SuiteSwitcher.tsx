@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AudioLines, Check, GitPullRequest, Highlighter, Search, Sun } from "lucide-react";
+import { ArrowUpRight, AudioLines, Check, GitPullRequest, Highlighter, Search, Sun } from "lucide-react";
 import { Command } from "cmdk";
 import type { SuiteAppId, SuiteLinks } from "../../shared/suite";
 
@@ -10,10 +10,10 @@ const APPS: Array<{
   icon: typeof Sun;
   shortcut: number;
 }> = [
-  { id: "personal", name: "BELL Personal", summary: "今日與收件匣", icon: Sun, shortcut: 1 },
-  { id: "explain", name: "BELL Explain", summary: "理解與複習", icon: AudioLines, shortcut: 2 },
-  { id: "pr", name: "BELL PR", summary: "貢獻與審查", icon: GitPullRequest, shortcut: 3 },
-  { id: "reader", name: "BELL Web Reader", summary: "網頁閱讀與標註", icon: Highlighter, shortcut: 4 },
+  { id: "personal", name: "BELL Personal", summary: "今日任務、行事曆與收件匣", icon: Sun, shortcut: 1 },
+  { id: "explain", name: "BELL Explain", summary: "深入概念拆解與間隔複習", icon: AudioLines, shortcut: 2 },
+  { id: "pr", name: "BELL PR", summary: "開源貢獻與程式碼審查", icon: GitPullRequest, shortcut: 3 },
+  { id: "reader", name: "BELL Web Reader", summary: "網頁擷取與紙上手寫塗鴉筆記", icon: Highlighter, shortcut: 4 },
 ];
 
 export default function SuiteSwitcher({
@@ -69,68 +69,78 @@ export default function SuiteSwitcher({
       contentClassName="p-command-content"
     >
       <div className="p-command-search">
-        <Search size={15} aria-hidden="true" />
+        <Search size={15} className="p-command-search-icon" aria-hidden="true" />
         <Command.Input
           value={search}
           onValueChange={setSearch}
           aria-label="切換 BELL 產品"
-          placeholder="前往產品…"
+          placeholder="切換到 BELL 工具…"
           autoFocus
         />
-        <kbd>esc</kbd>
+        <kbd className="p-kbd">ESC</kbd>
       </div>
       <Command.List className="p-command-list">
-        <Command.Empty>沒有符合的產品</Command.Empty>
+        <Command.Empty className="p-command-empty">沒有符合的 BELL 產品</Command.Empty>
         {manifestError ? (
           <Command.Item
             value="無法載入產品清單 重試"
             onSelect={() => onRetry?.()}
             className="p-command-item"
           >
-            <span className="p-command-app-name">
-              <b>無法載入產品清單</b>
-              <small>點擊重試</small>
-            </span>
+            <div className="p-command-app-meta">
+              <span className="p-command-app-name">無法載入產品清單</span>
+              <span className="p-command-app-summary">點擊重新連線套件清單</span>
+            </div>
           </Command.Item>
         ) : (
-          APPS.map((app) => {
-            const Icon = app.icon;
-            const current = app.id === "reader";
-            const href = current ? undefined : links[app.id];
-            const disabled = current || !href;
-            return (
-              <Command.Item
-                key={app.id}
-                value={`${app.name} ${app.summary}`}
-                disabled={disabled}
-                aria-current={current ? "page" : undefined}
-                className="p-command-item"
-                onSelect={() => {
-                  if (href) window.location.href = `${href}/`;
-                }}
-              >
-                <span className={`p-app-icon p-app-${app.id}`}>
-                  <Icon size={15} aria-hidden="true" />
-                </span>
-                <span className="p-command-app-name">
-                  <b>{app.name}</b>
-                  <small>{app.summary}</small>
-                </span>
-                <span className="p-command-app-state">
-                  {current ? (
-                    <em>
-                      目前 <Check size={12} aria-hidden="true" />
-                    </em>
-                  ) : !href ? (
-                    <em>尚未連結</em>
-                  ) : null}
-                  <kbd>⌃{app.shortcut}</kbd>
-                </span>
-              </Command.Item>
-            );
-          })
+          <Command.Group heading="BELL 產品套件" className="p-command-group">
+            {APPS.map((app) => {
+              const Icon = app.icon;
+              const current = app.id === "reader";
+              const href = current ? undefined : links[app.id];
+              const disabled = current || !href;
+              return (
+                <Command.Item
+                  key={app.id}
+                  value={`${app.name} ${app.summary}`}
+                  disabled={disabled}
+                  aria-current={current ? "page" : undefined}
+                  className={`p-command-item ${current ? "is-current" : !href ? "is-unlinked" : ""}`}
+                  onSelect={() => {
+                    if (href) window.location.href = `${href}/`;
+                  }}
+                >
+                  <span className={`p-app-icon p-app-${app.id}`} aria-hidden="true">
+                    <Icon size={16} />
+                  </span>
+                  <div className="p-command-app-meta">
+                    <span className="p-command-app-name">{app.name}</span>
+                    <span className="p-command-app-summary">{app.summary}</span>
+                  </div>
+                  <div className="p-command-app-state">
+                    {current ? (
+                      <span className="p-state-current">
+                        <Check size={12} aria-hidden="true" />
+                        <span>目前</span>
+                      </span>
+                    ) : href ? (
+                      <ArrowUpRight size={14} className="p-state-arrow" aria-hidden="true" />
+                    ) : (
+                      <span className="p-state-unlinked">尚未連結</span>
+                    )}
+                    <kbd className="p-kbd">⌃{app.shortcut}</kbd>
+                  </div>
+                </Command.Item>
+              );
+            })}
+          </Command.Group>
         )}
       </Command.List>
+      <div className="p-command-footer" aria-hidden="true">
+        <span>↑↓ 選擇</span>
+        <span>Enter 開啟</span>
+        <span>⌃1–4 快速切換</span>
+      </div>
     </Command.Dialog>
   );
 }

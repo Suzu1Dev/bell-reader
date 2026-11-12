@@ -343,7 +343,7 @@ export default function InkStage({
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isDesktopRail, setIsDesktopRail] = useState<boolean>(() =>
-    typeof window !== "undefined" ? window.innerWidth >= 1020 : true,
+    typeof window !== "undefined" ? window.innerWidth >= 1120 : true,
   );
   const [measured, setMeasured] = useState<MeasuredAnchor[]>([]);
   const [paperSpan, setPaperSpan] = useState<{ left: number; width: number }>({ left: 210, width: 620 });
@@ -378,10 +378,10 @@ export default function InkStage({
     const paperEl = paperRef.current;
     if (!stageEl || !paperEl) return;
 
-    const desktop = window.innerWidth >= 1020;
+    const stageRect = stageEl.getBoundingClientRect();
+    const desktop = stageRect.width >= 880;
     setIsDesktopRail(desktop);
 
-    const stageRect = stageEl.getBoundingClientRect();
     const paperRect = paperEl.getBoundingClientRect();
     const pLeft = paperRect.left - stageRect.left;
     const pWidth = paperRect.width;
@@ -487,14 +487,16 @@ export default function InkStage({
   }, [recomputeGeometry, page.id, showInk, readingFont]);
 
   useEffect(() => {
+    const stageEl = stageRef.current;
     const paperEl = paperRef.current;
-    if (!paperEl) return;
+    if (!stageEl || !paperEl) return;
     let raf = 0;
     const schedule = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => recomputeGeometry());
     };
     const ro = new ResizeObserver(schedule);
+    ro.observe(stageEl);
     ro.observe(paperEl);
     window.addEventListener("resize", schedule);
     let cancelled = false;
