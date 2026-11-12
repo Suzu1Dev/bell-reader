@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { AudioLines, Braces, Circle, Highlighter, PenLine, Sparkles, Trash2, Underline } from "lucide-react";
 import {
   INK_COLORS,
@@ -37,9 +38,9 @@ interface PendingSelection {
 
 const STYLE_LABELS: Record<InkStyle, string> = {
   highlight: "螢光筆",
-  underline: "波浪線",
-  box: "圈選",
-  bracket: "括號",
+  underline: "手繪底線",
+  box: "手繪圈選",
+  bracket: "段落括號",
 };
 
 const COLOR_NAMES: Record<InkColor, string> = {
@@ -171,7 +172,7 @@ function MarginCard({
 }) {
   const tilt = useMemo(() => {
     const jitter = seededJitter(`tilt:${annotation.id}`)();
-    return Number((jitter * 0.55).toFixed(2));
+    return Number((jitter * 0.65).toFixed(2));
   }, [annotation.id]);
 
   const explainHref = useMemo(
@@ -188,18 +189,26 @@ function MarginCard({
     [annotation, explainOrigin, pageId, pageTitle],
   );
 
+  const shortQuote =
+    annotation.quote.length > 40 ? `${annotation.quote.slice(0, 40)}…` : annotation.quote;
+
   return (
-    <aside
+    <motion.aside
       ref={cardRef}
+      initial={{ opacity: 0, y: 6, rotate: tilt }}
+      animate={{
+        opacity: 1,
+        y: 0,
+        x: active ? -3 : 0,
+        rotate: active ? 0 : tilt,
+      }}
+      transition={{ type: "spring", stiffness: 360, damping: 28 }}
       className={`margin-note-card ink-card-${annotation.color} ${active ? "is-active" : ""}`}
-      style={
-        styleTop !== undefined
-          ? { top: `${styleTop}px`, ["--note-tilt" as string]: `${tilt}deg` }
-          : { ["--note-tilt" as string]: `${tilt}deg` }
-      }
+      style={styleTop !== undefined ? { top: `${styleTop}px` } : undefined}
       onMouseEnter={onActivate}
       onClick={onActivate}
     >
+      <span className={`margin-note-tape ink-tape-${annotation.color}`} aria-hidden="true" />
       <div className="margin-note-head">
         <span className={`margin-note-badge ink-badge-${annotation.color}`}>
           {annotation.label || STYLE_LABELS[annotation.style]}
@@ -218,7 +227,7 @@ function MarginCard({
               aria-label="送到 BELL Explain"
               onClick={(e) => e.stopPropagation()}
             >
-              <AudioLines size={13} aria-hidden="true" />
+              <AudioLines size={12} aria-hidden="true" />
               <span>Explain</span>
             </a>
           ) : null}
@@ -232,20 +241,26 @@ function MarginCard({
               onDelete(annotation.id);
             }}
           >
-            <Trash2 size={13} aria-hidden="true" />
+            <Trash2 size={12} aria-hidden="true" />
           </button>
         </span>
       </div>
+      {shortQuote ? (
+        <div className="margin-note-quote">
+          <bdi>「{shortQuote}」</bdi>
+        </div>
+      ) : null}
       <p className="margin-note-body">
         <bdi>{annotation.note}</bdi>
       </p>
-    </aside>
+    </motion.aside>
   );
 }
 
 export default function InkStage({
   page,
   showInk,
+  readingFont = "sans",
   explainOrigin,
   selectionBusy,
   onAiSelection,
@@ -254,6 +269,7 @@ export default function InkStage({
 }: {
   page: SavedPage;
   showInk: boolean;
+  readingFont?: "sans" | "serif";
   explainOrigin?: string;
   selectionBusy: boolean;
   onAiSelection: (input: { blockId: string; quote: string; style: InkStyle; color: InkColor }) => Promise<void>;
@@ -273,12 +289,12 @@ export default function InkStage({
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isDesktopRail, setIsDesktopRail] = useState<boolean>(() =>
-    typeof window !== "undefined" ? window.innerWidth >= 980 : true,
+    typeof window !== "undefined" ? window.innerWidth >= 1024 : true,
   );
   const [measured, setMeasured] = useState<MeasuredAnchor[]>([]);
   const [cardHeights, setCardHeights] = useState<Record<string, number>>({});
-  const [railLeft, setRailLeft] = useState<number>(724);
-  const [stageSize, setStageSize] = useState<{ width: number; height: number }>({ width: 1020, height: 600 });
+  const [railLeft, setRailLeft] = useState<number>(728);
+  const [stageSize, setStageSize] = useState<{ width: number; height: number }>({ width: 1040, height: 600 });
 
   // Selection toolbar state
   const [selection, setSelection] = useState<PendingSelection | null>(null);
@@ -300,7 +316,7 @@ export default function InkStage({
   const recomputeGeometry = useCallback(() => {
     const stageEl = stageRef.current;
     if (!stageEl) return;
-    const desktop = window.innerWidth >= 980;
+    const desktop = window.innerWidth >= 1024;
     setIsDesktopRail(desktop);
 
     const stageRect = stageEl.getBoundingClientRect();
@@ -341,14 +357,14 @@ export default function InkStage({
         annotation: ann,
         rects,
         bounds,
-        anchorX: ann.style === "bracket" ? bounds.left + bounds.width + 12 : lastRect.left + lastRect.width + 4,
+        anchorX: ann.style === "bracket" ? bounds.left + bounds.width + 13 : lastRect.left + lastRect.width + 5,
         anchorY: ann.style === "bracket" ? bounds.top + bounds.height / 2 : lastRect.top + lastRect.height / 2,
       });
     }
 
     const heights: Record<string, number> = {};
     for (const [id, el] of cardRefs.current.entries()) {
-      heights[id] = el.offsetHeight || 96;
+      heights[id] = el.offsetHeight || 110;
     }
 
     setMeasured(nextMeasured);
@@ -361,7 +377,7 @@ export default function InkStage({
 
   useLayoutEffect(() => {
     recomputeGeometry();
-  }, [recomputeGeometry, page.id, showInk]);
+  }, [recomputeGeometry, page.id, showInk, readingFont]);
 
   useEffect(() => {
     const stageEl = stageRef.current;
@@ -383,10 +399,10 @@ export default function InkStage({
   const positionedMap = useMemo(() => {
     const slots = measured.map((m) => ({
       id: m.annotation.id,
-      desiredTop: Math.max(0, m.bounds.top - 6),
-      height: cardHeights[m.annotation.id] ?? 100,
+      desiredTop: Math.max(8, m.bounds.top - 8),
+      height: cardHeights[m.annotation.id] ?? 112,
     }));
-    const positioned = layoutMarginNotes(slots, 14);
+    const positioned = layoutMarginNotes(slots, 16);
     return new Map(positioned.map((p) => [p.id, p.top]));
   }, [measured, cardHeights]);
 
@@ -394,8 +410,8 @@ export default function InkStage({
     let maxBottom = 0;
     for (const m of measured) {
       const top = positionedMap.get(m.annotation.id) ?? 0;
-      const h = cardHeights[m.annotation.id] ?? 100;
-      maxBottom = Math.max(maxBottom, top + h + 16);
+      const h = cardHeights[m.annotation.id] ?? 112;
+      maxBottom = Math.max(maxBottom, top + h + 20);
     }
     return maxBottom;
   }, [measured, positionedMap, cardHeights]);
@@ -423,10 +439,10 @@ export default function InkStage({
     setSelection({
       blockId: node.dataset.blockText,
       quote,
-      top: Math.max(8, selRect.top - stageRect.top - 48),
+      top: Math.max(8, selRect.top - stageRect.top - 52),
       left: Math.min(
         Math.max(8, selRect.left - stageRect.left),
-        Math.max(8, stageRect.width - 310),
+        Math.max(8, stageRect.width - 320),
       ),
     });
   };
@@ -526,7 +542,7 @@ export default function InkStage({
             const { annotation, rects, bounds, anchorX, anchorY } = m;
             const isActive = activeId === annotation.id;
             const cardTop = positionedMap.get(annotation.id);
-            const targetY = (cardTop ?? bounds.top) + 22;
+            const targetY = (cardTop ?? bounds.top) + 26;
             const colorVar = `var(--ink-${annotation.color}-stroke)`;
             const washVar = `var(--ink-${annotation.color}-wash)`;
 
@@ -541,6 +557,7 @@ export default function InkStage({
                       key={idx}
                       d={highlighterPath(rect, `${annotation.id}:${idx}`)}
                       fill={washVar}
+                      opacity={isActive ? 1 : 0.88}
                       className="ink-highlighter-path"
                     />
                   ))}
@@ -551,7 +568,7 @@ export default function InkStage({
                       d={wavyUnderlinePath(rect, `${annotation.id}:${idx}`)}
                       fill="none"
                       stroke={colorVar}
-                      strokeWidth={isActive ? 2.5 : 1.9}
+                      strokeWidth={isActive ? 2.1 : 1.55}
                       strokeLinecap="round"
                     />
                   ))}
@@ -561,9 +578,9 @@ export default function InkStage({
                       key={idx}
                       d={handBoxPath(rect, `${annotation.id}:${idx}`)}
                       fill={washVar}
-                      fillOpacity={0.35}
+                      fillOpacity={isActive ? 0.42 : 0.25}
                       stroke={colorVar}
-                      strokeWidth={isActive ? 2.3 : 1.75}
+                      strokeWidth={isActive ? 2.05 : 1.55}
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />
@@ -573,7 +590,7 @@ export default function InkStage({
                     d={bracketPath(bounds, annotation.id)}
                     fill="none"
                     stroke={colorVar}
-                    strokeWidth={isActive ? 2.5 : 2}
+                    strokeWidth={isActive ? 2.2 : 1.75}
                     strokeLinecap="round"
                   />
                 )}
@@ -582,11 +599,11 @@ export default function InkStage({
                     d={leaderArrowPath(anchorX, anchorY, railLeft - 6, targetY, annotation.id)}
                     fill="none"
                     stroke={colorVar}
-                    strokeWidth={isActive ? 1.85 : 1.25}
+                    strokeWidth={isActive ? 1.65 : 1.15}
                     strokeDasharray={isActive ? undefined : "4 3"}
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    opacity={isActive ? 0.95 : 0.52}
+                    opacity={isActive ? 0.96 : 0.54}
                   />
                 ) : null}
               </g>
@@ -595,119 +612,125 @@ export default function InkStage({
         </svg>
       ) : null}
 
-      {selection ? (
-        <div
-          className="selection-pen-bar"
-          style={{ top: `${selection.top}px`, left: `${selection.left}px` }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onMouseUp={(e) => e.stopPropagation()}
-        >
-          <div className="pen-bar-row">
-            <div className="pen-styles" role="group" aria-label="筆觸樣式">
-              {(
-                [
-                  ["highlight", Highlighter],
-                  ["underline", Underline],
-                  ["box", Circle],
-                  ["bracket", Braces],
-                ] as const
-              ).map(([style, Icon]) => (
-                <button
-                  key={style}
-                  type="button"
-                  className={`pen-icon-btn ${penStyle === style ? "is-selected" : ""}`}
-                  title={STYLE_LABELS[style]}
-                  aria-label={STYLE_LABELS[style]}
-                  aria-pressed={penStyle === style}
-                  onClick={() => setPenStyle(style)}
-                >
-                  <Icon size={14} aria-hidden="true" />
-                </button>
-              ))}
-            </div>
-            <div className="pen-colors" role="group" aria-label="筆水顏色">
-              {INK_COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  className={`pen-color-dot dot-${c} ${penColor === c ? "is-selected" : ""}`}
-                  title={COLOR_NAMES[c]}
-                  aria-label={COLOR_NAMES[c]}
-                  aria-pressed={penColor === c}
-                  onClick={() => setPenColor(c)}
-                />
-              ))}
-            </div>
-            <button
-              type="button"
-              className="pen-action-btn is-primary"
-              disabled={selectionBusy}
-              onClick={async () => {
-                const target = selection;
-                setSelection(null);
-                window.getSelection()?.removeAllRanges();
-                await onAiSelection({
-                  blockId: target.blockId,
-                  quote: target.quote,
-                  style: penStyle,
-                  color: penColor,
-                });
-              }}
-            >
-              <Sparkles size={13} aria-hidden="true" />
-              <span>{selectionBusy ? "標註中…" : "AI 說明"}</span>
-            </button>
-            <button
-              type="button"
-              className="pen-action-btn"
-              onClick={() => setManualOpen((v) => !v)}
-            >
-              <PenLine size={13} aria-hidden="true" />
-              <span>手寫批註</span>
-            </button>
-          </div>
-          {manualOpen ? (
-            <form
-              className="pen-manual-form"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                if (!manualNote.trim()) return;
-                const target = selection;
-                const text = manualNote.trim();
-                setSelection(null);
-                setManualOpen(false);
-                setManualNote("");
-                window.getSelection()?.removeAllRanges();
-                await onManualSelection({
-                  blockId: target.blockId,
-                  quote: target.quote,
-                  style: penStyle,
-                  color: penColor,
-                  note: text,
-                });
-              }}
-            >
-              <input
-                type="text"
-                value={manualNote}
-                onChange={(e) => setManualNote(e.target.value)}
-                placeholder="寫下頁邊筆記…"
-                aria-label="頁邊筆記內容"
-                maxLength={300}
-                autoFocus
-              />
-              <button type="submit" className="pen-action-btn is-primary">
-                儲存
+      <AnimatePresence>
+        {selection ? (
+          <motion.div
+            initial={{ opacity: 0, y: 6, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 4, scale: 0.97 }}
+            transition={{ duration: 0.14 }}
+            className="selection-pen-bar"
+            style={{ top: `${selection.top}px`, left: `${selection.left}px` }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseUp={(e) => e.stopPropagation()}
+          >
+            <div className="pen-bar-row">
+              <div className="pen-styles" role="group" aria-label="筆觸樣式">
+                {(
+                  [
+                    ["highlight", Highlighter],
+                    ["underline", Underline],
+                    ["box", Circle],
+                    ["bracket", Braces],
+                  ] as const
+                ).map(([style, Icon]) => (
+                  <button
+                    key={style}
+                    type="button"
+                    className={`pen-icon-btn ${penStyle === style ? "is-selected" : ""}`}
+                    title={STYLE_LABELS[style]}
+                    aria-label={STYLE_LABELS[style]}
+                    aria-pressed={penStyle === style}
+                    onClick={() => setPenStyle(style)}
+                  >
+                    <Icon size={14} aria-hidden="true" />
+                  </button>
+                ))}
+              </div>
+              <div className="pen-colors" role="group" aria-label="筆水顏色">
+                {INK_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    className={`pen-color-dot dot-${c} ${penColor === c ? "is-selected" : ""}`}
+                    title={COLOR_NAMES[c]}
+                    aria-label={COLOR_NAMES[c]}
+                    aria-pressed={penColor === c}
+                    onClick={() => setPenColor(c)}
+                  />
+                ))}
+              </div>
+              <button
+                type="button"
+                className="pen-action-btn is-primary"
+                disabled={selectionBusy}
+                onClick={async () => {
+                  const target = selection;
+                  setSelection(null);
+                  window.getSelection()?.removeAllRanges();
+                  await onAiSelection({
+                    blockId: target.blockId,
+                    quote: target.quote,
+                    style: penStyle,
+                    color: penColor,
+                  });
+                }}
+              >
+                <Sparkles size={13} aria-hidden="true" />
+                <span>{selectionBusy ? "標註中…" : "AI 說明"}</span>
               </button>
-            </form>
-          ) : null}
-        </div>
-      ) : null}
+              <button
+                type="button"
+                className="pen-action-btn"
+                onClick={() => setManualOpen((v) => !v)}
+              >
+                <PenLine size={13} aria-hidden="true" />
+                <span>手寫批註</span>
+              </button>
+            </div>
+            {manualOpen ? (
+              <form
+                className="pen-manual-form"
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!manualNote.trim()) return;
+                  const target = selection;
+                  const text = manualNote.trim();
+                  setSelection(null);
+                  setManualOpen(false);
+                  setManualNote("");
+                  window.getSelection()?.removeAllRanges();
+                  await onManualSelection({
+                    blockId: target.blockId,
+                    quote: target.quote,
+                    style: penStyle,
+                    color: penColor,
+                    note: text,
+                  });
+                }}
+              >
+                <input
+                  type="text"
+                  value={manualNote}
+                  onChange={(e) => setManualNote(e.target.value)}
+                  placeholder="寫下頁邊筆記…"
+                  aria-label="頁邊筆記內容"
+                  maxLength={300}
+                  autoFocus
+                />
+                <button type="submit" className="pen-action-btn is-primary">
+                  儲存
+                </button>
+              </form>
+            ) : null}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
-      <article className="reader-paper">
+      <article className={`reader-paper ${readingFont === "serif" ? "is-serif" : ""}`}>
         {page.summary ? (
           <div className="reader-ai-summary">
-            <span className="summary-scribble-tag">導讀摘要</span>
+            <span className="summary-scribble-tag">AI 導讀速記</span>
             <p>
               <bdi>{page.summary}</bdi>
             </p>
@@ -720,8 +743,14 @@ export default function InkStage({
         <div
           ref={railRef}
           className="margin-rail"
-          style={{ minHeight: `${Math.max(200, railMinHeight)}px` }}
+          style={{ minHeight: `${Math.max(240, railMinHeight)}px` }}
         >
+          {showInk && measured.length === 0 ? (
+            <div className="margin-rail-empty">
+              <Sparkles size={15} aria-hidden="true" />
+              <span>按下右上角「AI 塗鴉標註」自動畫重點，或反白任一句文字加上眉批。</span>
+            </div>
+          ) : null}
           {showInk
             ? measured.map((m) => (
                 <MarginCard

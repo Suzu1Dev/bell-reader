@@ -1,3 +1,6 @@
+@import "tailwindcss/theme.css";
+@import "tailwindcss/utilities.css";
+
 *, *::before, *::after {
   box-sizing: border-box;
 }
@@ -30,10 +33,23 @@ button, input, textarea, select {
   box-shadow: var(--focus);
 }
 
+/* Top Reading Progress Bar */
+.reading-progress-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2.5px;
+  background: linear-gradient(90deg, var(--sky-400), var(--violet-300), var(--amber-400));
+  transform-origin: left center;
+  z-index: 60;
+  pointer-events: none;
+}
+
 /* ── App Shell ──────────────────────────────────────────────────────────── */
 .app-shell {
   display: grid;
-  grid-template-columns: 244px minmax(0, 1fr);
+  grid-template-columns: 248px minmax(0, 1fr);
   min-height: 100dvh;
   background: var(--chrome);
 }
@@ -56,23 +72,26 @@ button, input, textarea, select {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  min-height: 36px;
   margin-bottom: var(--space-3);
 }
 
 .suite-brand-btn {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 8px;
+  min-height: 36px;
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 5px 8px;
   cursor: pointer;
   min-width: 0;
-  transition: background var(--dur-1) var(--ease-out);
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1);
 }
 .suite-brand-btn:hover {
   background: var(--fill-hover);
+  border-color: var(--line);
 }
 
 .brand-tile {
@@ -105,7 +124,8 @@ button, input, textarea, select {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 9px;
+  min-height: 32px;
+  padding: 5px 10px;
   border-radius: var(--radius-sm);
   background: var(--raised);
   border: 1px solid var(--line-2);
@@ -144,7 +164,7 @@ button, input, textarea, select {
 .nav-row.is-active {
   background: var(--fill-active);
   color: var(--text);
-  font-weight: 550;
+  font-weight: 560;
 }
 
 .nav-count {
@@ -158,8 +178,9 @@ button, input, textarea, select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 10px 4px;
+  padding: 16px 10px 4px;
   font-size: var(--text-meta);
+  font-weight: 550;
   color: var(--text-3);
 }
 
@@ -257,6 +278,7 @@ button, input, textarea, select {
   color: var(--text-2);
   font-size: var(--text-ui);
   cursor: pointer;
+  transition: background var(--dur-1), color var(--dur-1);
 }
 .icon-ghost-btn:hover {
   background: var(--fill-hover);
@@ -280,26 +302,22 @@ button, input, textarea, select {
   display: none;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  min-height: 48px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--chrome);
-}
-.mobile-brand-btn {
-  background: transparent;
-  border: none;
-  font-size: var(--text-body);
-  cursor: pointer;
 }
 
 .workspace-container {
   width: 100%;
-  max-width: 960px;
+  max-width: 980px;
   margin: 0 auto;
-  padding: var(--space-6) var(--space-5);
+  padding: var(--space-6) var(--space-5) var(--space-8);
 }
 
 .status-banner {
-  margin: var(--space-3) var(--space-5) 0;
+  margin: var(--space-3) auto 0;
+  width: min(980px, calc(100% - 40px));
   padding: 10px 14px;
   border-radius: var(--radius-md);
   border: 1px solid var(--line-2);
@@ -309,6 +327,7 @@ button, input, textarea, select {
   justify-content: space-between;
   gap: var(--space-3);
   font-size: var(--text-ui);
+  box-shadow: var(--shadow-card);
 }
 .status-banner.is-error {
   border-color: rgba(255, 120, 115, 0.35);
@@ -332,7 +351,7 @@ button, input, textarea, select {
   font-size: var(--text-ui);
   color: var(--reader-text);
   margin-bottom: var(--space-3);
-  padding: 4px 10px;
+  padding: 4px 11px;
   border-radius: var(--radius-pill);
   background: var(--reader-tint);
 }
@@ -340,20 +359,43 @@ button, input, textarea, select {
   filter: brightness(1.08);
 }
 
-/* ── Composer & Library Cards ───────────────────────────────────────────── */
+/* ── Hero Reading Desk & Bento Library Cards ────────────────────────────── */
 .composer-card {
-  background: var(--raised);
+  position: relative;
+  background:
+    radial-gradient(560px 180px at 8% 0%, var(--reader-tint), transparent 72%),
+    var(--raised);
   border: 1px solid var(--line-2);
-  border-radius: var(--radius-lg);
-  padding: var(--space-5);
+  border-radius: 16px;
+  padding: 24px 26px;
   box-shadow: var(--shadow-card);
+}
+.composer-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-meta);
+  font-weight: 560;
+  color: var(--reader-text);
+  margin-bottom: 6px;
+}
+.composer-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--reader-tint);
+  color: var(--reader-text);
+  font-size: var(--text-meta);
+  font-weight: 550;
 }
 .composer-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-4);
   flex-wrap: wrap;
 }
 .composer-header h1 {
@@ -361,6 +403,7 @@ button, input, textarea, select {
   font-size: var(--text-title);
   line-height: var(--lh-title);
   letter-spacing: var(--tracking-tight);
+  font-weight: 680;
 }
 .composer-sub {
   margin: 4px 0 0;
@@ -376,16 +419,24 @@ button, input, textarea, select {
 .composer-textarea,
 .search-input {
   width: 100%;
-  background: var(--panel);
+  background: var(--paper-sheet);
   border: 1px solid var(--line-2);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
+  border-radius: 10px;
+  padding: 11px 14px;
   color: var(--text);
+  transition: border-color var(--dur-1), box-shadow var(--dur-1);
+}
+.composer-title-input:focus,
+.composer-textarea:focus,
+.search-input:focus {
+  outline: none;
+  border-color: var(--reader);
+  box-shadow: 0 0 0 3px var(--reader-tint);
 }
 .composer-textarea {
   resize: vertical;
-  min-height: 132px;
-  line-height: 1.65;
+  min-height: 140px;
+  line-height: 1.7;
 }
 .composer-footer {
   display: flex;
@@ -404,10 +455,10 @@ button, input, textarea, select {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: var(--panel);
+  background: var(--paper-sheet);
   border: 1px solid var(--line-2);
   border-radius: var(--radius-sm);
-  padding: 5px 10px;
+  padding: 6px 10px;
   font-size: var(--text-ui);
   color: var(--text-2);
 }
@@ -420,6 +471,7 @@ button, input, textarea, select {
   color: var(--text);
   cursor: pointer;
   max-width: 160px;
+  outline: none;
 }
 
 .btn-primary,
@@ -431,21 +483,28 @@ button, input, textarea, select {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border-radius: var(--radius-sm);
-  padding: 7px 13px;
+  border-radius: 8px;
+  padding: 7px 14px;
   font-size: var(--text-ui);
-  font-weight: 550;
+  font-weight: 560;
   cursor: pointer;
   border: 1px solid transparent;
   white-space: nowrap;
-  transition: filter var(--dur-1), background var(--dur-1);
+  transition: filter var(--dur-1), background var(--dur-1), transform var(--dur-1);
+}
+.btn-secondary.is-compact {
+  padding: 5px 10px;
 }
 .btn-primary {
   background: var(--reader);
   color: var(--reader-on);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16);
 }
 .btn-primary:hover:not(:disabled) {
   filter: brightness(1.07);
+}
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0.5px);
 }
 .btn-primary:disabled,
 .btn-secondary:disabled {
@@ -497,6 +556,7 @@ button, input, textarea, select {
 .library-header h1 {
   margin: 0;
   font-size: var(--text-lg);
+  font-weight: 650;
 }
 .library-header h1 {
   font-size: var(--text-title);
@@ -513,22 +573,24 @@ button, input, textarea, select {
 
 .page-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
-  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
 }
 .page-card {
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: var(--space-4);
+  border-radius: 12px;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  transition: border-color var(--dur-1), transform var(--dur-1);
+  gap: 9px;
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--dur-1), transform var(--dur-1) var(--ease-out), background var(--dur-1);
 }
 .page-card:hover {
   border-color: var(--line-2);
   background: var(--raised-2);
+  transform: translateY(-2px);
 }
 .page-card-meta {
   display: flex;
@@ -540,7 +602,8 @@ button, input, textarea, select {
 .page-card h3 {
   margin: 0;
   font-size: var(--text-lg);
-  line-height: 1.4;
+  font-weight: 630;
+  line-height: 1.42;
 }
 .page-card p {
   margin: 0;
@@ -550,18 +613,28 @@ button, input, textarea, select {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  line-height: 1.6;
+}
+.page-card-foot {
+  margin-top: auto;
+  padding-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-micro);
+  color: var(--text-3);
 }
 
 .topic-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
+  padding: 2px 9px;
   border-radius: var(--radius-pill);
   background: var(--reader-tint);
   color: var(--reader-text);
   font-size: var(--text-meta);
-  font-weight: 550;
+  font-weight: 560;
 }
 .folder-chip,
 .mini-tag {
@@ -580,6 +653,10 @@ button, input, textarea, select {
   font-size: var(--text-meta);
   color: var(--text-3);
 }
+.ann-count-badge.has-ink {
+  color: var(--ink-amber-stroke);
+  font-weight: 560;
+}
 
 /* ── Topics + Explain View ──────────────────────────────────────────────── */
 .topic-groups-list {
@@ -590,8 +667,9 @@ button, input, textarea, select {
 .topic-group-card {
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
+  border-radius: 14px;
+  padding: 18px 20px;
+  box-shadow: var(--shadow-card);
 }
 .topic-group-head {
   display: flex;
@@ -611,6 +689,7 @@ button, input, textarea, select {
 .topic-group-title h2 {
   margin: 0;
   font-size: var(--text-lg);
+  font-weight: 640;
   color: var(--text);
 }
 .explain-smart-chips {
@@ -627,7 +706,7 @@ button, input, textarea, select {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: 8px 6px;
+  padding: 9px 8px;
   border-radius: var(--radius-sm);
   flex-wrap: wrap;
 }
@@ -635,7 +714,7 @@ button, input, textarea, select {
   background: var(--fill-hover);
 }
 .topic-page-name {
-  font-weight: 500;
+  font-weight: 540;
 }
 .topic-page-tags {
   display: flex;
@@ -646,7 +725,7 @@ button, input, textarea, select {
 .empty-box {
   background: var(--raised);
   border: 1px dashed var(--line-2);
-  border-radius: var(--radius-lg);
+  border-radius: 14px;
   padding: var(--space-8) var(--space-4);
   text-align: center;
   color: var(--text-2);
@@ -656,12 +735,12 @@ button, input, textarea, select {
   gap: var(--space-3);
 }
 
-/* ── Reader View & SVG Doodle Overlay Stage ─────────────────────────────── */
+/* ── Editorial Reader View & Rough.js / Freehand Doodle Stage ───────────── */
 .reader-view-wrap {
   width: 100%;
-  max-width: 1080px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: var(--space-4) var(--space-5) var(--space-8);
+  padding: var(--space-4) var(--space-5) 72px;
 }
 
 .reader-toolbar {
@@ -670,8 +749,11 @@ button, input, textarea, select {
   justify-content: space-between;
   gap: var(--space-3);
   flex-wrap: wrap;
-  padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--line);
+  padding: 10px 14px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-card);
   margin-bottom: var(--space-5);
 }
 .reader-toolbar-left,
@@ -682,8 +764,56 @@ button, input, textarea, select {
   flex-wrap: wrap;
 }
 
+/* Live Streaming AI Ink Progress Banner */
+.ai-ink-progress-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 12px 16px;
+  margin-bottom: var(--space-5);
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, var(--reader-tint), rgba(167, 153, 255, 0.08), var(--reader-tint));
+  border: 1px solid var(--ink-sky-border);
+  box-shadow: var(--shadow-card);
+}
+.ai-ink-progress-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.ai-ink-pulse {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--reader);
+  color: var(--reader-on);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  animation: inkPulse 1.6s ease-in-out infinite;
+}
+@keyframes inkPulse {
+  0%, 100% { transform: scale(1) rotate(-4deg); }
+  50% { transform: scale(1.08) rotate(4deg); }
+}
+.ai-ink-progress-main strong {
+  display: block;
+  font-size: var(--text-ui);
+  font-weight: 620;
+  color: var(--text);
+}
+.ai-ink-progress-main small {
+  display: block;
+  font-size: var(--text-meta);
+  color: var(--text-2);
+}
+
 .reader-doc-header {
-  max-width: 680px;
+  max-width: 720px;
   margin-bottom: var(--space-5);
 }
 .reader-doc-source {
@@ -692,7 +822,17 @@ button, input, textarea, select {
   gap: 10px;
   font-size: var(--text-meta);
   color: var(--text-3);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+}
+.source-domain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  color: var(--text-2);
 }
 .source-ext-link {
   display: inline-flex;
@@ -700,11 +840,15 @@ button, input, textarea, select {
   gap: 4px;
   color: var(--reader-text);
 }
+.source-ext-link:hover {
+  text-decoration: underline;
+}
 .reader-doc-header h1 {
   margin: 0;
   font-size: var(--text-display);
   line-height: var(--lh-display);
   letter-spacing: var(--tracking-tight);
+  font-weight: 700;
 }
 
 .explain-matches-bar {
@@ -727,8 +871,8 @@ button, input, textarea, select {
 }
 .ink-stage.has-rail {
   display: grid;
-  grid-template-columns: minmax(0, 680px) 300px;
-  column-gap: 48px;
+  grid-template-columns: minmax(0, 700px) 316px;
+  column-gap: 44px;
   align-items: start;
 }
 
@@ -740,47 +884,64 @@ button, input, textarea, select {
   z-index: 2;
   overflow: visible;
 }
+.ink-highlighter-path {
+  mix-blend-mode: var(--highlighter-blend);
+}
 
+/* Tactile Editorial Paper Sheet */
 .reader-paper {
   position: relative;
   z-index: 1;
+  background: var(--paper-sheet);
+  border: 1px solid var(--paper-sheet-border);
+  border-radius: 16px;
+  padding: 32px 38px;
+  box-shadow: var(--paper-shadow);
   font-size: var(--text-reading);
   line-height: var(--lh-reading);
   color: var(--text);
   min-width: 0;
 }
+.reader-paper.is-serif {
+  font-family: var(--font-serif);
+  font-size: 17.5px;
+  line-height: 32px;
+  letter-spacing: 0.01em;
+}
 
 .reader-ai-summary {
   position: relative;
-  margin-bottom: var(--space-5);
-  padding: 14px 16px;
-  border-radius: var(--radius-md);
+  margin-bottom: 26px;
+  padding: 15px 18px;
+  border-radius: 11px;
   background: var(--ink-sky-card);
   border: 1.5px dashed var(--ink-sky-border);
 }
 .summary-scribble-tag {
   display: inline-block;
   font-size: var(--text-meta);
-  font-weight: 600;
+  font-weight: 650;
   color: var(--ink-sky-stroke);
-  margin-bottom: 4px;
+  margin-bottom: 5px;
 }
 .reader-ai-summary p {
   margin: 0;
+  font-family: var(--font-sans);
   font-size: var(--text-body);
-  line-height: 1.65;
+  line-height: 1.68;
 }
 
 .reader-block-row {
-  margin-bottom: 18px;
+  margin-bottom: 20px;
 }
 .reader-heading {
-  margin: 26px 0 10px;
+  margin: 28px 0 10px;
   line-height: 1.35;
   letter-spacing: var(--tracking-tight);
+  font-weight: 680;
 }
-.reader-heading.level-1 { font-size: 22px; }
-.reader-heading.level-2 { font-size: 19px; }
+.reader-heading.level-1 { font-size: 23px; }
+.reader-heading.level-2 { font-size: 19.5px; }
 .reader-heading.level-3 { font-size: 17px; }
 
 .reader-paragraph {
@@ -788,9 +949,11 @@ button, input, textarea, select {
   word-break: break-word;
 }
 .reader-quote {
-  margin: 0;
-  padding: 6px 0 6px 16px;
+  margin: 4px 0;
+  padding: 8px 14px 8px 18px;
   border-left: 3px solid var(--reader);
+  background: var(--fill-hover);
+  border-radius: 0 8px 8px 0;
   color: var(--text-2);
 }
 .reader-list-item {
@@ -802,7 +965,7 @@ button, input, textarea, select {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--text-3);
+  background: var(--reader);
   margin-top: 12px;
   flex-shrink: 0;
 }
@@ -812,30 +975,31 @@ button, input, textarea, select {
 }
 .reader-code-wrap {
   position: relative;
-  margin: 4px 0;
-  padding: 14px 16px;
+  margin: 8px 0;
+  padding: 15px 18px;
   background: var(--chrome);
   border: 1px solid var(--line-2);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 .reader-code-lang {
   position: absolute;
-  top: 6px;
-  right: 10px;
+  top: 7px;
+  right: 11px;
   font-size: var(--text-micro);
   color: var(--text-3);
+  text-transform: uppercase;
 }
 .reader-figure {
-  margin: 8px 0;
+  margin: 12px 0;
 }
 .reader-figure img {
   max-width: 100%;
   height: auto;
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   border: 1px solid var(--line);
 }
 .reader-figure figcaption {
@@ -844,47 +1008,80 @@ button, input, textarea, select {
   margin-top: 6px;
 }
 
-/* Interactive text anchor inside blocks (transparent background because SVG draws organic ink!) */
+/* Interactive text anchor inside blocks (SVG draws the freehand/rough ink!) */
 .ink-text-hit {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  border-radius: 2px;
-  padding: 0;
+  border-radius: 3px;
+  padding: 0 1px;
+  transition: background var(--dur-1);
 }
 .ink-text-hit.is-active {
-  text-decoration: none;
+  background: rgba(255, 255, 255, 0.04);
 }
 
-/* ── Handwritten-Feel Margin Notes ──────────────────────────────────────── */
+/* ── Studio Dot-Grid Margin Rail & Washi-Tape Note Cards ────────────────── */
 .margin-rail {
   position: relative;
   z-index: 3;
+  background-image: var(--rail-dots);
+  background-size: 16px 16px;
+  border-radius: 14px;
+  padding: 6px;
+}
+
+.margin-rail-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 11px;
+  border: 1px dashed var(--line-2);
+  background: var(--raised);
+  color: var(--text-3);
+  font-size: var(--text-meta);
+  line-height: 1.6;
 }
 
 .margin-note-card {
   position: relative;
-  padding: 11px 13px;
-  border-radius: 4px 10px 10px 8px;
+  padding: 13px 14px 12px;
+  border-radius: 5px 12px 12px 10px;
   border: 1px solid var(--line-2);
   border-left-width: 3.5px;
   background: var(--raised);
   box-shadow: var(--shadow-card);
-  transform: rotate(var(--note-tilt, 0deg));
-  transition: transform var(--dur-1) var(--ease-out), box-shadow var(--dur-1), border-color var(--dur-1);
   cursor: pointer;
 }
 .ink-stage.has-rail .margin-note-card {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 4px;
+  right: 4px;
 }
 .margin-note-card:hover,
 .margin-note-card.is-active {
-  transform: rotate(0deg) translateX(-2px);
   box-shadow: var(--shadow-pop);
-  z-index: 5;
+  z-index: 6;
 }
+
+/* Tactile Washi-Tape Accent Strip */
+.margin-note-tape {
+  position: absolute;
+  top: -5px;
+  left: 18px;
+  width: 42px;
+  height: 9px;
+  border-radius: 2px;
+  opacity: 0.72;
+  transform: rotate(-2deg);
+  pointer-events: none;
+}
+.ink-tape-amber { background: var(--ink-amber-wash); border: 1px solid var(--ink-amber-border); }
+.ink-tape-mint { background: var(--ink-mint-wash); border: 1px solid var(--ink-mint-border); }
+.ink-tape-violet { background: var(--ink-violet-wash); border: 1px solid var(--ink-violet-border); }
+.ink-tape-coral { background: var(--ink-coral-wash); border: 1px solid var(--ink-coral-border); }
+.ink-tape-sky { background: var(--ink-sky-wash); border: 1px solid var(--ink-sky-border); }
 
 .ink-card-amber { background: var(--ink-amber-card); border-color: var(--ink-amber-border); border-left-color: var(--ink-amber-stroke); }
 .ink-card-mint { background: var(--ink-mint-card); border-color: var(--ink-mint-border); border-left-color: var(--ink-mint-stroke); }
@@ -896,12 +1093,12 @@ button, input, textarea, select {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
   flex-wrap: wrap;
 }
 .margin-note-badge {
   font-size: var(--text-meta);
-  font-weight: 650;
+  font-weight: 680;
 }
 .ink-badge-amber { color: var(--ink-amber-stroke); }
 .ink-badge-mint { color: var(--ink-mint-stroke); }
@@ -910,14 +1107,17 @@ button, input, textarea, select {
 .ink-badge-sky { color: var(--ink-sky-stroke); }
 
 .margin-note-topic {
-  font-size: var(--text-meta);
-  color: var(--text-3);
+  font-size: var(--text-micro);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--fill-hover);
+  color: var(--text-2);
 }
 .margin-note-actions {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 .margin-note-btn {
   display: inline-flex;
@@ -928,7 +1128,7 @@ button, input, textarea, select {
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 11.5px;
   cursor: pointer;
 }
 .margin-note-btn:hover {
@@ -939,19 +1139,30 @@ button, input, textarea, select {
   color: var(--danger);
 }
 
+.margin-note-quote {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-3);
+  margin-bottom: 5px;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .margin-note-body {
   margin: 0;
   font-family: var(--font-note);
   font-size: 14.5px;
-  line-height: 1.58;
+  line-height: 1.6;
   color: var(--text);
 }
 
 .mobile-margin-stack {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 10px;
+  margin-top: 12px;
   padding-left: 8px;
 }
 
@@ -960,10 +1171,10 @@ button, input, textarea, select {
   position: absolute;
   z-index: 25;
   background: var(--overlay);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(12px);
   border: 1px solid var(--line-2);
-  border-radius: var(--radius-md);
-  padding: 6px 8px;
+  border-radius: 10px;
+  padding: 7px 9px;
   box-shadow: var(--shadow-pop);
   display: flex;
   flex-direction: column;
@@ -983,8 +1194,8 @@ button, input, textarea, select {
   gap: 3px;
 }
 .pen-icon-btn {
-  width: 26px;
-  height: 26px;
+  width: 27px;
+  height: 27px;
   border-radius: var(--radius-xs);
   border: none;
   background: transparent;
@@ -1006,17 +1217,18 @@ button, input, textarea, select {
   border: 2px solid transparent;
   cursor: pointer;
   padding: 0;
+  transition: transform var(--dur-1);
 }
 .pen-color-dot.is-selected {
-  transform: scale(1.2);
+  transform: scale(1.22);
   border-color: var(--text);
 }
 .pen-action-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 9px;
-  border-radius: var(--radius-xs);
+  padding: 4px 10px;
+  border-radius: 6px;
   border: 1px solid var(--line-2);
   background: var(--raised);
   font-size: var(--text-meta);
@@ -1026,7 +1238,7 @@ button, input, textarea, select {
   background: var(--reader);
   color: var(--reader-on);
   border-color: transparent;
-  font-weight: 550;
+  font-weight: 560;
 }
 .pen-manual-form {
   display: flex;
@@ -1040,14 +1252,16 @@ button, input, textarea, select {
   border-radius: var(--radius-xs);
   padding: 4px 8px;
   font-size: var(--text-meta);
+  outline: none;
 }
 
-/* ── Suite Switcher & Dialog (Direction C Precise) ──────────────────────── */
+/* ── Unified BELL Suite Switcher & Dialog (Frameless Search + Unified Height) ── */
 .p-command-overlay,
 .p-dialog-overlay {
   position: fixed;
   inset: 0;
   background: var(--scrim);
+  backdrop-filter: blur(2px);
   z-index: 50;
 }
 .p-command-content,
@@ -1071,16 +1285,20 @@ button, input, textarea, select {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 44px;
   padding: 11px 14px;
   border-bottom: 1px solid var(--line);
   color: var(--text-3);
 }
-.p-command-search input {
+.p-command-search input,
+.p-command-search input:focus,
+.p-command-search input:focus-visible {
   flex: 1;
   background: transparent;
-  border: none;
+  border: none !important;
   color: var(--text);
-  outline: none;
+  outline: none !important;
+  box-shadow: none !important;
 }
 .p-command-search kbd,
 .p-command-app-state kbd {
@@ -1094,13 +1312,14 @@ button, input, textarea, select {
 }
 .p-command-list {
   padding: 6px;
-  max-height: 300px;
+  max-height: 320px;
   overflow-y: auto;
 }
 .p-command-item {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-height: 52px;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -1129,15 +1348,18 @@ button, input, textarea, select {
 .p-command-app-name {
   display: flex;
   flex-direction: column;
+  gap: 1px;
   min-width: 0;
 }
 .p-command-app-name b {
   font-size: var(--text-ui);
   font-weight: 600;
+  line-height: 18px;
 }
 .p-command-app-name small {
   font-size: var(--text-meta);
   color: var(--text-3);
+  line-height: 17px;
 }
 .p-command-app-state {
   margin-left: auto;
@@ -1163,6 +1385,7 @@ button, input, textarea, select {
 .p-dialog-head h2 {
   margin: 0;
   font-size: var(--text-lg);
+  font-weight: 640;
 }
 .settings-form {
   display: flex;
@@ -1203,15 +1426,19 @@ button, input, textarea, select {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .margin-note-card {
-    transform: none !important;
-  }
-  .spin {
+  .spin,
+  .ai-ink-pulse {
     animation: none;
   }
 }
 
 /* ── Mobile / 360px Responsive ──────────────────────────────────────────── */
+@media (max-width: 1023px) {
+  .reader-paper {
+    padding: 24px 22px;
+  }
+}
+
 @media (max-width: 860px) {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -1239,10 +1466,13 @@ button, input, textarea, select {
   }
   .workspace-container,
   .reader-view-wrap {
-    padding: var(--space-4) var(--space-3);
+    padding: var(--space-4) var(--space-3) 56px;
   }
   .composer-card {
-    padding: var(--space-4);
+    padding: 18px;
+  }
+  .reader-paper {
+    padding: 20px 16px;
   }
   .page-grid {
     grid-template-columns: minmax(0, 1fr);

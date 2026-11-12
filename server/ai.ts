@@ -150,12 +150,28 @@ async function runClaudeCli(prompt: string, settings: ProviderSettings, signal: 
   }
 }
 
+const CODEX_DISABLED_FEATURES = [
+  "shell_tool",
+  "unified_exec",
+  "code_mode",
+  "apps",
+  "plugins",
+  "hooks",
+  "multi_agent",
+  "multi_agent_v2",
+  "browser_use",
+  "memories",
+  "skill_search",
+  "goals",
+];
+
 async function runCodexCli(prompt: string, settings: ProviderSettings, signal: AbortSignal): Promise<unknown> {
   const dir = await mkdtemp(join(tmpdir(), "bell-reader-codex-"));
   const outFile = join(dir, "last-message.txt");
   const args = [
     "exec",
     "--skip-git-repo-check",
+    "--ignore-user-config",
     "--ephemeral",
     "-s",
     "read-only",
@@ -165,6 +181,15 @@ async function runCodexCli(prompt: string, settings: ProviderSettings, signal: A
     'web_search="disabled"',
     "-c",
     "project_doc_max_bytes=0",
+    "-c",
+    'model_reasoning_effort="low"',
+    "-c",
+    "skills.include_instructions=false",
+    "-c",
+    "skills.bundled.enabled=false",
+    "-c",
+    "features.skip_host_skill_discovery=true",
+    ...CODEX_DISABLED_FEATURES.flatMap((feature) => ["-c", `features.${feature}=false`]),
     "-o",
     outFile,
   ];
@@ -189,11 +214,15 @@ async function runCodexCli(prompt: string, settings: ProviderSettings, signal: A
       child.on("close", (code) => {
         signal.removeEventListener("abort", onAbort);
         if (signal.aborted) {
-          reject(new DOMException("Cancelled", "AbortError"));
+          reject(
+            signal.reason instanceof DOMException
+              ? signal.reason
+              : new DOMException("Cancelled", "AbortError"),
+          );
           return;
         }
         if (code !== 0) {
-          reject(new AppError(502, "Codex CLI 執行失敗，請確認登入狀態或切換供應商。"));
+          reject(new AppError(502, "Codex CLI 執行失敗，請確認登入狀態或切換至 Claude 供應商。"));
           return;
         }
         resolve();
@@ -240,7 +269,7 @@ async function runHttpApi(prompt: string, settings: ProviderSettings, signal: Ab
 }
 
 export const defaultJsonRunner: JsonPromptRunner = async (prompt, settings, signal) => {
-  const timeout = AbortSignal.any([signal, AbortSignal.timeout(90_000)]);
+  const timeout = AbortSignal.any([signal, AbortSignal.timeout(150_000)]);
   if (settings.provider === "claude") return runClaudeCli(prompt, settings, timeout);
   if (settings.provider === "api") return runHttpApi(prompt, settings, timeout);
   return runCodexCli(prompt, settings, timeout);

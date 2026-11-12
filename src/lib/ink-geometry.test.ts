@@ -13,16 +13,19 @@ import {
   parseReaderHandoff,
 } from "../../shared/suite.js";
 
-test("SVG hand-drawn paths are deterministic and valid SVG path strings", () => {
+test("Rough.js & perfect-freehand paths are deterministic and valid SVG path strings", () => {
   const rect = { left: 40, top: 120, width: 180, height: 22 };
+  const shortRect = { left: 40, top: 120, width: 84, height: 22 };
   const p1 = highlighterPath(rect, "ann-1:0");
   const p2 = highlighterPath(rect, "ann-1:0");
   assert.equal(p1, p2);
   assert.ok(p1.startsWith("M ") && p1.endsWith("Z"));
-  assert.ok(wavyUnderlinePath(rect, "ann-1:0").includes("Q"));
-  assert.ok(handBoxPath(rect, "ann-1:0").startsWith("M "));
-  assert.ok(bracketPath(rect, "ann-1").includes("Q"));
-  assert.ok(leaderArrowPath(220, 130, 720, 145, "ann-1").includes("C "));
+  assert.ok(wavyUnderlinePath(rect, "ann-1:0").includes("C"));
+  assert.equal(wavyUnderlinePath(rect, "ann-1:0"), wavyUnderlinePath(rect, "ann-1:0"));
+  assert.ok(handBoxPath(rect, "ann-1:0").startsWith("M"));
+  assert.ok(handBoxPath(shortRect, "ann-1:1").includes("C"));
+  assert.ok(bracketPath(rect, "ann-1").includes("C"));
+  assert.ok(leaderArrowPath(220, 130, 720, 145, "ann-1").includes("C"));
 });
 
 test("layoutMarginNotes prevents vertical overlaps while preserving order", () => {

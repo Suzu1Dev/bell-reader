@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowLeft,
   AudioLines,
@@ -9,8 +10,10 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  FileText,
   Folder as FolderIcon,
   FolderPlus,
+  Globe,
   Highlighter,
   Layers,
   Menu,
@@ -22,6 +25,7 @@ import {
   Sun,
   Tag,
   Trash2,
+  Type,
   X,
 } from "lucide-react";
 import {
@@ -44,7 +48,7 @@ import {
   type SuiteLinks,
   type SuiteManifest,
 } from "../shared/suite";
-import { apiGet, apiWrite } from "./lib/api";
+import { apiAnnotateStream, apiGet, apiWrite } from "./lib/api";
 import SuiteSwitcher from "./components/SuiteSwitcher";
 import InkStage from "./components/InkStage";
 
@@ -105,10 +109,15 @@ export default function App() {
     const saved = localStorage.getItem("bell.reader.theme");
     return saved === "light" ? "light" : "dark";
   });
+  const [readingFont, setReadingFont] = useState<"sans" | "serif">(() => {
+    const saved = localStorage.getItem("bell.reader.font");
+    return saved === "serif" ? "serif" : "sans";
+  });
   const [hash, setHash] = useState<string>(() => window.location.hash || "#/");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [scrollProgress, setScrollProgress] = useState(0);
 
   // Suite manifest
   const [suiteLinks, setSuiteLinks] = useState<SuiteLinks>({});
@@ -123,10 +132,12 @@ export default function App() {
   const [newFolderName, setNewFolderName] = useState("");
   const [newFolderColor, setNewFolderColor] = useState<InkColor>("sky");
 
-  // Active page state
+  // Active page & streaming annotation state
   const [activePage, setActivePage] = useState<SavedPage | null>(null);
   const [pageLoading, setPageLoading] = useState(false);
   const [annotating, setAnnotating] = useState(false);
+  const [annotateStage, setAnnotateStage] = useState("");
+  const annotateAbortRef = useRef<AbortController | null>(null);
   const [selectionBusy, setSelectionBusy] = useState(false);
   const [showInk, setShowInk] = useState(true);
   const [explainStatus, setExplainStatus] = useState<ExplainBridgeStatus>({
@@ -161,6 +172,10 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    localStorage.setItem("bell.reader.font", readingFont);
+  }, [readingFont]);
+
+  useEffect(() => {
     const onHash = () => {
       setHash(window.location.hash || "#/");
       setSidebarOpen(false);
@@ -168,6 +183,23 @@ export default function App() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  const route = useMemo(() => parseRoute(hash), [hash]);
+
+  useEffect(() => {
+    if (route.kind !== "page") {
+      setScrollProgress(0);
+      return;
+    }
+    const updateScroll = () => {
+      const doc = document.documentElement;
+      const max = doc.scrollHeight - window.innerHeight;
+      setScrollProgress(max > 24 ? Math.min(100, Math.max(0, (window.scrollY / max) * 100)) : 0);
+    };
+    updateScroll();
+    window.addEventListener("scroll", updateScroll, { passive: true });
+    return () => window.removeEventListener("scroll", updateScroll);
+  }, [route, activePage?.id]);
 
   const loadManifest = useCallback(async () => {
     try {
@@ -250,11 +282,10 @@ export default function App() {
     }
   }, [hash, manifestLoaded, suiteLinks]);
 
-  const route = useMemo(() => parseRoute(hash), [hash]);
-
   // Load active page & Explain topic links when viewing #/page/:id
   useEffect(() => {
     if (route.kind !== "page") {
+      annotateAbortRef.current?.abort();
       setActivePage(null);
       return;
     }
@@ -288,6 +319,8 @@ export default function App() {
       .catch(() => undefined);
   }, [route.kind]);
 
+  const isComposerUrl = useMemo(() => /^https?:\/\/\S+$/i.test(composerInput.trim()), [composerInput]);
+
   const handleOpenOrSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!composerInput.trim() || composerBusy) return;
@@ -295,9 +328,8 @@ export default function App() {
     setNotice(null);
     try {
       const trimmed = composerInput.trim();
-      const isUrl = /^https?:\/\/\S+$/i.test(trimmed);
       const res = await apiWrite<{ page: SavedPage; reused: boolean }>("POST", "/api/pages", {
-        ...(isUrl ? { url: trimmed } : { content: composerInput }),
+        ...(isComposerUrl ? { url: trimmed } : { content: composerInput }),
         ...(composerTitle.trim() ? { title: composerTitle.trim() } : {}),
         folderId: composerFolderId || null,
       });
@@ -319,24 +351,39 @@ export default function App() {
 
   const handleAnnotatePage = async () => {
     if (!activePage || annotating) return;
+    const controller = new AbortController();
+    annotateAbortRef.current = controller;
     setAnnotating(true);
+    setAnnotateStage("正在啟動 AI 塗鴉標註引擎…");
     setNotice(null);
     try {
-      const res = await apiWrite<{
+      const res = await apiAnnotateStream<{
         page: SavedPage;
         folders: Folder[];
         explain: ExplainBridgeStatus;
-      }>("POST", `/api/pages/${encodeURIComponent(activePage.id)}/annotate`, {});
+      }>(activePage.id, (msg) => setAnnotateStage(msg), controller.signal);
       setActivePage(res.page);
       setFolders(res.folders);
       setExplainStatus(res.explain);
       setShowInk(true);
       await loadLibrary();
     } catch (err) {
-      setNotice({ kind: "error", text: err instanceof Error ? err.message : "AI 標註失敗。" });
+      if (controller.signal.aborted || (err instanceof Error && err.name === "AbortError")) {
+        setNotice({ kind: "info", text: "已取消 AI 塗鴉標註。" });
+      } else {
+        setNotice({ kind: "error", text: err instanceof Error ? err.message : "AI 標註失敗。" });
+      }
     } finally {
+      if (annotateAbortRef.current === controller) {
+        annotateAbortRef.current = null;
+      }
       setAnnotating(false);
+      setAnnotateStage("");
     }
+  };
+
+  const handleCancelAnnotate = () => {
+    annotateAbortRef.current?.abort();
   };
 
   const handleCreateFolder = async (e: React.FormEvent) => {
@@ -423,8 +470,50 @@ export default function App() {
     );
   }, [activePage, personalOrigin]);
 
+  const renderPageCard = (p: SavedPageSummary) => {
+    const folder = folders.find((f) => f.id === p.folderId);
+    return (
+      <a key={p.id} href={`#/page/${encodeURIComponent(p.id)}`} className="page-card">
+        <div className="page-card-meta">
+          <span className="topic-pill">
+            <bdi>{p.topic}</bdi>
+          </span>
+          {folder ? (
+            <span className="folder-chip">
+              <span className={`folder-dot dot-${folder.color}`} />
+              <bdi>{folder.name}</bdi>
+            </span>
+          ) : null}
+          <span className={`ann-count-badge ${p.annotationCount > 0 ? "has-ink" : ""}`}>
+            {p.annotationCount > 0 ? `${p.annotationCount} 則筆跡` : "待標註"}
+          </span>
+        </div>
+        <h3>
+          <bdi>{p.title}</bdi>
+        </h3>
+        <p>
+          <bdi>{p.summary || p.excerpt}</bdi>
+        </p>
+        {p.siteName ? (
+          <div className="page-card-foot">
+            <Globe size={11} aria-hidden="true" />
+            <span>{p.siteName}</span>
+          </div>
+        ) : null}
+      </a>
+    );
+  };
+
   return (
     <div className="app-shell">
+      {route.kind === "page" && scrollProgress > 0 ? (
+        <div
+          className="reading-progress-bar"
+          style={{ transform: `scaleX(${scrollProgress / 100})` }}
+          aria-hidden="true"
+        />
+      ) : null}
+
       <SuiteSwitcher
         links={suiteLinks}
         open={switcherOpen}
@@ -573,7 +662,7 @@ export default function App() {
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
           >
             {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
-            <span>{theme === "dark" ? "亮色" : "暗色"}</span>
+            <span>{theme === "dark" ? "亮色紙張" : "暗色畫室"}</span>
           </button>
           <button
             type="button"
@@ -599,11 +688,17 @@ export default function App() {
           </button>
           <button
             type="button"
-            className="mobile-brand-btn"
+            className="suite-brand-btn"
             aria-label="切換 BELL 產品"
             onClick={() => setSwitcherOpen(true)}
           >
-            <b>BELL</b> Web Reader
+            <span className="brand-tile" aria-hidden="true">
+              <Highlighter size={14} />
+            </span>
+            <span className="brand-wordmark">
+              <b>BELL</b> Web Reader
+            </span>
+            <ChevronDown size={13} className="brand-chevron" aria-hidden="true" />
           </button>
           <a href="#/" className="icon-ghost-btn" aria-label="新增頁面">
             <Plus size={18} />
@@ -640,10 +735,14 @@ export default function App() {
             <section className="composer-card">
               <div className="composer-header">
                 <div>
+                  <span className="composer-eyebrow">
+                    <Sparkles size={12} aria-hidden="true" />
+                    <span>手繪螢光筆閱讀室 · 永久保存不重跑 Token</span>
+                  </span>
                   <h1>
                     {handoffDraft
                       ? `來自 ${APP_NAMES[handoffDraft.from]}`
-                      : "開啟網頁或貼上想讀的內容"}
+                      : "輸入網址或貼上內容，開始塗鴉伴讀"}
                   </h1>
                   {handoffDraft?.truncated ? (
                     <p className="composer-sub">內容過長，已截斷為前 2,000 字</p>
@@ -658,9 +757,15 @@ export default function App() {
                       setComposerInput(SAMPLE_ARTICLE);
                     }}
                   >
-                    載入示範文章
+                    <FileText size={14} aria-hidden="true" />
+                    <span>載入示範文章</span>
                   </button>
-                ) : null}
+                ) : (
+                  <span className="composer-mode-pill">
+                    {isComposerUrl ? <Globe size={13} /> : <FileText size={13} />}
+                    <span>{isComposerUrl ? "網址模式 · 自動擷取正文" : "筆記模式 · 支援 Markdown"}</span>
+                  </span>
+                )}
               </div>
 
               <form onSubmit={handleOpenOrSave} className="composer-form">
@@ -677,7 +782,7 @@ export default function App() {
                   className="composer-textarea"
                   value={composerInput}
                   onChange={(e) => setComposerInput(e.target.value)}
-                  placeholder="輸入 https:// 網址，或直接貼上文章、程式碼、講義段落…"
+                  placeholder="貼上 https:// 網頁網址，或直接貼上文章、技術文件、程式碼段落…"
                   aria-label="網址或閱讀內容"
                   rows={6}
                 />
@@ -728,40 +833,12 @@ export default function App() {
             {pages.length > 0 ? (
               <section className="recent-section">
                 <div className="section-title-row">
-                  <h2>最近保存</h2>
+                  <h2>最近保存的閱讀筆記</h2>
                   <a href="#/library" className="text-link">
                     查看全部（{pages.length}）
                   </a>
                 </div>
-                <div className="page-grid">
-                  {pages.slice(0, 6).map((p) => {
-                    const folder = folders.find((f) => f.id === p.folderId);
-                    return (
-                      <a key={p.id} href={`#/page/${encodeURIComponent(p.id)}`} className="page-card">
-                        <div className="page-card-meta">
-                          <span className="topic-pill">
-                            <bdi>{p.topic}</bdi>
-                          </span>
-                          {folder ? (
-                            <span className="folder-chip">
-                              <span className={`folder-dot dot-${folder.color}`} />
-                              <bdi>{folder.name}</bdi>
-                            </span>
-                          ) : null}
-                          <span className="ann-count-badge">
-                            {p.annotationCount > 0 ? `${p.annotationCount} 則標註` : "尚未標註"}
-                          </span>
-                        </div>
-                        <h3>
-                          <bdi>{p.title}</bdi>
-                        </h3>
-                        <p>
-                          <bdi>{p.summary || p.excerpt}</bdi>
-                        </p>
-                      </a>
-                    );
-                  })}
-                </div>
+                <div className="page-grid">{pages.slice(0, 6).map(renderPageCard)}</div>
               </section>
             ) : null}
           </div>
@@ -794,35 +871,7 @@ export default function App() {
                 </a>
               </div>
             ) : (
-              <div className="page-grid">
-                {filteredPages.map((p) => {
-                  const folder = folders.find((f) => f.id === p.folderId);
-                  return (
-                    <a key={p.id} href={`#/page/${encodeURIComponent(p.id)}`} className="page-card">
-                      <div className="page-card-meta">
-                        <span className="topic-pill">
-                          <bdi>{p.topic}</bdi>
-                        </span>
-                        {folder ? (
-                          <span className="folder-chip">
-                            <span className={`folder-dot dot-${folder.color}`} />
-                            <bdi>{folder.name}</bdi>
-                          </span>
-                        ) : null}
-                        <span className="ann-count-badge">
-                          {p.annotationCount > 0 ? `${p.annotationCount} 則標註` : "尚未標註"}
-                        </span>
-                      </div>
-                      <h3>
-                        <bdi>{p.title}</bdi>
-                      </h3>
-                      <p>
-                        <bdi>{p.summary || p.excerpt}</bdi>
-                      </p>
-                    </a>
-                  );
-                })}
-              </div>
+              <div className="page-grid">{filteredPages.map(renderPageCard)}</div>
             )}
           </div>
         )}
@@ -963,10 +1012,20 @@ export default function App() {
                   </div>
 
                   <div className="reader-toolbar-right">
+                    <button
+                      type="button"
+                      className="btn-secondary is-compact"
+                      onClick={() => setReadingFont((f) => (f === "sans" ? "serif" : "sans"))}
+                      title="切換正文字體（現代黑體／書卷襯線）"
+                    >
+                      <Type size={13} aria-hidden="true" />
+                      <span>{readingFont === "sans" ? "書卷襯線" : "現代黑體"}</span>
+                    </button>
+
                     {activePage.annotations.length > 0 ? (
                       <button
                         type="button"
-                        className="btn-secondary"
+                        className="btn-secondary is-compact"
                         onClick={() => setShowInk((v) => !v)}
                         aria-pressed={showInk}
                       >
@@ -1028,9 +1087,49 @@ export default function App() {
                   </div>
                 </div>
 
+                <AnimatePresence>
+                  {annotating ? (
+                    <motion.div
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      className="ai-ink-progress-card"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      <div className="ai-ink-progress-main">
+                        <span className="ai-ink-pulse" aria-hidden="true">
+                          <Highlighter size={15} />
+                        </span>
+                        <div>
+                          <strong>{annotateStage || "AI 正在閱讀全文並繪製塗鴉標註…"}</strong>
+                          <small>完成後筆跡將永久保存於本機書庫，下次閱讀不需重跑</small>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-secondary is-compact"
+                        onClick={handleCancelAnnotate}
+                      >
+                        取消
+                      </button>
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
+
                 <header className="reader-doc-header">
                   <div className="reader-doc-source">
-                    {activePage.siteName ? <span>{activePage.siteName}</span> : <span>保存筆記</span>}
+                    {activePage.siteName ? (
+                      <span className="source-domain-chip">
+                        <Globe size={12} aria-hidden="true" />
+                        <span>{activePage.siteName}</span>
+                      </span>
+                    ) : (
+                      <span className="source-domain-chip">
+                        <FileText size={12} aria-hidden="true" />
+                        <span>保存筆記</span>
+                      </span>
+                    )}
                     {activePage.url ? (
                       <a
                         href={activePage.url}
@@ -1072,6 +1171,7 @@ export default function App() {
                 <InkStage
                   page={activePage}
                   showInk={showInk}
+                  readingFont={readingFont}
                   explainOrigin={explainOrigin}
                   selectionBusy={selectionBusy}
                   onAiSelection={async (sel) => {

@@ -256,10 +256,16 @@ export function createApp(options: CreateAppOptions) {
         }
       }
       const controller = new AbortController();
-      req.on("close", () => {
+      const onClose = () => {
         if (!res.writableEnded) controller.abort();
-      });
-      const fetched = await htmlFetcher(targetUrl.href, controller.signal);
+      };
+      res.on("close", onClose);
+      let fetched: Awaited<ReturnType<typeof htmlFetcher>>;
+      try {
+        fetched = await htmlFetcher(targetUrl.href, controller.signal);
+      } finally {
+        res.off("close", onClose);
+      }
       if (!forceRefetch) {
         const existingFinal = store.findByUrl(fetched.finalUrl.href);
         if (existingFinal) {
@@ -311,34 +317,81 @@ export function createApp(options: CreateAppOptions) {
     const settings = store.getSettings();
     const folders = store.listFolders();
     const controller = new AbortController();
-    req.on("close", () => {
+    const onClose = () => {
       if (!res.writableEnded) controller.abort();
-    });
+    };
+    res.on("close", onClose);
 
-    const aiResult = await annotatePageWithAI(
-      page,
-      folders,
-      settings,
-      controller.signal,
-      aiRunner,
-    );
+    const wantsStream = String(req.headers.accept ?? "").includes("application/x-ndjson");
+    const stages = [
+      "正在拆解頁面段落與語意重點…",
+      "正在以螢光筆與手繪線條標記關鍵句…",
+      "正在撰寫頁邊手寫筆記並分類主題…",
+      "正在比對 BELL Explain 知識庫連結…",
+    ];
+    let stageIdx = 0;
+    let stageTimer: NodeJS.Timeout | undefined;
 
-    let assignedFolderId = page.folderId;
-    if (assignedFolderId === null && settings.autoFolder && aiResult.suggestedFolder) {
-      const folder = store.createFolder(aiResult.suggestedFolder);
-      assignedFolderId = folder.id;
+    const sendEvent = (payload: unknown) => {
+      if (!res.destroyed && !res.writableEnded) {
+        res.write(`${JSON.stringify(payload)}\n`);
+      }
+    };
+
+    if (wantsStream) {
+      res.status(200);
+      res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+      sendEvent({ type: "stage", message: stages[0] });
+      stageTimer = setInterval(() => {
+        stageIdx = Math.min(stageIdx + 1, stages.length - 1);
+        sendEvent({ type: "stage", message: stages[stageIdx] });
+      }, 3800);
     }
 
-    const updated = store.replaceAiAnnotations(page.id, {
-      topic: aiResult.topic,
-      tags: aiResult.tags,
-      summary: aiResult.summary,
-      folderId: assignedFolderId,
-      annotations: aiResult.annotations,
-    });
+    try {
+      const aiResult = await annotatePageWithAI(
+        page,
+        folders,
+        settings,
+        controller.signal,
+        aiRunner,
+      );
 
-    const explain = await explainBridge.matchForPage(updated);
-    res.json({ page: updated, folders: store.listFolders(), explain });
+      let assignedFolderId = page.folderId;
+      if (assignedFolderId === null && settings.autoFolder && aiResult.suggestedFolder) {
+        const folder = store.createFolder(aiResult.suggestedFolder);
+        assignedFolderId = folder.id;
+      }
+
+      const updated = store.replaceAiAnnotations(page.id, {
+        topic: aiResult.topic,
+        tags: aiResult.tags,
+        summary: aiResult.summary,
+        folderId: assignedFolderId,
+        annotations: aiResult.annotations,
+      });
+
+      const explain = await explainBridge.matchForPage(updated);
+      const result = { page: updated, folders: store.listFolders(), explain };
+      if (wantsStream) {
+        sendEvent({ type: "complete", ...result });
+        res.end();
+      } else {
+        res.json(result);
+      }
+    } catch (err) {
+      if (!wantsStream) throw err;
+      if (!controller.signal.aborted) {
+        const { message } = publicError(err);
+        sendEvent({ type: "error", message });
+      }
+      if (!res.writableEnded) res.end();
+    } finally {
+      if (stageTimer) clearInterval(stageTimer);
+      res.off("close", onClose);
+    }
   });
 
   app.post("/api/pages/:id/annotate-selection", async (req, res) => {
@@ -349,19 +402,24 @@ export function createApp(options: CreateAppOptions) {
 
     const settings = store.getSettings();
     const controller = new AbortController();
-    req.on("close", () => {
+    const onClose = () => {
       if (!res.writableEnded) controller.abort();
-    });
+    };
+    res.on("close", onClose);
 
-    const item = await annotateSelectionWithAI(
-      page,
-      parsed.data,
-      settings,
-      controller.signal,
-      aiRunner,
-    );
-    const created = store.addAnnotation(page.id, item);
-    res.status(201).json({ annotation: created, page: store.getPage(page.id)! });
+    try {
+      const item = await annotateSelectionWithAI(
+        page,
+        parsed.data,
+        settings,
+        controller.signal,
+        aiRunner,
+      );
+      const created = store.addAnnotation(page.id, item);
+      res.status(201).json({ annotation: created, page: store.getPage(page.id)! });
+    } finally {
+      res.off("close", onClose);
+    }
   });
 
   app.post("/api/pages/:id/annotations", (req, res) => {

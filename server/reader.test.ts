@@ -114,23 +114,27 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
         contentType: "text/html",
       };
     },
-    aiRunner: async () => ({
-      topic: "Event Loop",
-      tags: ["Microtask", "瀏覽器渲染"],
-      summary: "釐清宏任務、微任務與畫面重繪之間的排程順序。",
-      suggestedFolder: "前端效能",
-      annotations: [
-        {
-          blockId: "b1",
-          quote: "先清空 Microtask Queue",
-          style: "highlight",
-          color: "amber",
-          label: "核心規則",
-          note: "微任務若無限遞迴，瀏覽器就無法進入下一幀繪製。",
-          topic: "Microtask",
-        },
-      ],
-    }),
+    aiRunner: async (_input, _settings, signal) => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(signal?.aborted, false, "request body completion must not abort AI runner");
+      return {
+        topic: "Event Loop",
+        tags: ["Microtask", "瀏覽器渲染"],
+        summary: "釐清宏任務、微任務與畫面重繪之間的排程順序。",
+        suggestedFolder: "前端效能",
+        annotations: [
+          {
+            blockId: "b1",
+            quote: "先清空 Microtask Queue",
+            style: "highlight",
+            color: "amber",
+            label: "核心規則",
+            note: "微任務若無限遞迴，瀏覽器就無法進入下一幀繪製。",
+            topic: "Microtask",
+          },
+        ],
+      };
+    },
   });
 
   const srv = await listenLocal(app);
@@ -208,6 +212,23 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
     assert.equal(annBody.explain.status, "ready");
     assert.equal(annBody.explain.matches[0].id, "note-event-loop-1");
     assert.equal(annBody.explain.matches[0].href, "#/note/note-event-loop-1");
+
+    // 4b. NDJSON streaming mode emits stage events + complete payload without premature abort
+    const streamRes = await fetch(`${srv.url}/api/pages/${body1.page.id}/annotate`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/x-ndjson",
+      },
+      body: JSON.stringify({}),
+    });
+    assert.equal(streamRes.status, 200);
+    const lines = (await streamRes.text())
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { type: string });
+    assert.ok(lines.some((l) => l.type === "stage"));
+    assert.equal(lines[lines.length - 1]?.type, "complete");
 
     // 5. Suite manifest & today feed conform to Suite contract
     const manifestRes = await fetch(`${srv.url}/api/suite/manifest`);
