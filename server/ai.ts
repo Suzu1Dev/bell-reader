@@ -17,6 +17,7 @@ import {
   type ReaderBlock,
   type SavedPage,
   type SketchCurveShape,
+  type SketchElement,
   type SketchKind,
 } from "../shared/types.js";
 import { AppError } from "./errors.js";
@@ -46,6 +47,26 @@ interface LeadAnnotationPayload {
 }
 
 const SKETCH_KIND_ALIASES: Record<string, SketchKind> = {
+  canvas: "canvas",
+  custom: "canvas",
+  free: "canvas",
+  freeform: "canvas",
+  diagram: "canvas",
+  scene: "canvas",
+  sketch: "canvas",
+  cycle: "cycle",
+  loop: "cycle",
+  ring: "cycle",
+  circular: "cycle",
+  tree: "tree",
+  hierarchy: "tree",
+  branch: "tree",
+  venn: "venn",
+  overlap: "venn",
+  set: "venn",
+  sets: "venn",
+  timeline: "timeline",
+  chrono: "timeline",
   flow: "flow",
   flowchart: "flow",
   pipeline: "flow",
@@ -74,12 +95,164 @@ function asTrimmed(v: unknown, maxLen: number): string {
   return typeof v === "string" ? v.trim().slice(0, maxLen) : "";
 }
 
+function clampCanvasX(v: unknown, fallback = 180): number {
+  return typeof v === "number" && Number.isFinite(v) ? Math.max(8, Math.min(352, v)) : fallback;
+}
+
+function clampCanvasY(v: unknown, fallback = 100): number {
+  return typeof v === "number" && Number.isFinite(v) ? Math.max(8, Math.min(212, v)) : fallback;
+}
+
+function sanitizeSketchElement(raw: unknown): SketchElement | null {
+  if (!isRecord(raw)) return null;
+  const rawType = asTrimmed(raw.type, 16).toLowerCase();
+  const label = asTrimmed(raw.label, 32);
+
+  if (rawType === "rect" || rawType === "box") {
+    const x = clampCanvasX(raw.x, 40);
+    const y = clampCanvasY(raw.y, 40);
+    const w = typeof raw.w === "number" && Number.isFinite(raw.w) ? Math.max(24, Math.min(340, raw.w)) : 96;
+    const h = typeof raw.h === "number" && Number.isFinite(raw.h) ? Math.max(20, Math.min(180, raw.h)) : 44;
+    return {
+      type: "rect",
+      x,
+      y,
+      w,
+      h,
+      ...(raw.fill === true ? { fill: true } : {}),
+      ...(raw.dashed === true ? { dashed: true } : {}),
+      ...(label ? { label } : {}),
+    };
+  }
+
+  if (rawType === "ellipse" || rawType === "circle" || rawType === "oval") {
+    const x = clampCanvasX(raw.x ?? raw.cx, 180);
+    const y = clampCanvasY(raw.y ?? raw.cy, 100);
+    const rxRaw = raw.rx ?? raw.r ?? 44;
+    const ryRaw = raw.ry ?? raw.r ?? 36;
+    const rx = typeof rxRaw === "number" && Number.isFinite(rxRaw) ? Math.max(10, Math.min(170, rxRaw)) : 44;
+    const ry = typeof ryRaw === "number" && Number.isFinite(ryRaw) ? Math.max(10, Math.min(100, ryRaw)) : 36;
+    return {
+      type: "ellipse",
+      x,
+      y,
+      rx,
+      ry,
+      ...(raw.fill === true ? { fill: true } : {}),
+      ...(raw.dashed === true ? { dashed: true } : {}),
+      ...(label ? { label } : {}),
+    };
+  }
+
+  if (rawType === "arrow" || rawType === "line") {
+    const x1 = clampCanvasX(raw.x1, 40);
+    const y1 = clampCanvasY(raw.y1, 100);
+    const x2 = clampCanvasX(raw.x2, 300);
+    const y2 = clampCanvasY(raw.y2, 100);
+    if (Math.hypot(x2 - x1, y2 - y1) < 6) return null;
+    if (rawType === "line") {
+      return {
+        type: "line",
+        x1,
+        y1,
+        x2,
+        y2,
+        ...(raw.dashed === true ? { dashed: true } : {}),
+        ...(label ? { label: label.slice(0, 28) } : {}),
+      };
+    }
+    const bend =
+      typeof raw.bend === "number" && Number.isFinite(raw.bend)
+        ? Math.max(-110, Math.min(110, raw.bend))
+        : undefined;
+    return {
+      type: "arrow",
+      x1,
+      y1,
+      x2,
+      y2,
+      ...(bend ? { bend } : {}),
+      ...(raw.dashed === true ? { dashed: true } : {}),
+      ...(label ? { label: label.slice(0, 28) } : {}),
+    };
+  }
+
+  if (rawType === "curve") {
+    const ptsRaw = Array.isArray(raw.points) ? raw.points : Array.isArray(raw.pts) ? raw.pts : [];
+    const points: Array<[number, number]> = [];
+    for (const pt of ptsRaw) {
+      if (Array.isArray(pt) && pt.length >= 2 && typeof pt[0] === "number" && typeof pt[1] === "number") {
+        points.push([clampCanvasX(pt[0]), clampCanvasY(pt[1])]);
+      }
+      if (points.length >= 12) break;
+    }
+    if (points.length < 2) return null;
+    return {
+      type: "curve",
+      points,
+      ...(raw.fill === true ? { fill: true } : {}),
+      ...(raw.dashed === true ? { dashed: true } : {}),
+      ...(raw.closed === true ? { closed: true } : {}),
+      ...(label ? { label: label.slice(0, 28) } : {}),
+    };
+  }
+
+  if (rawType === "dot" || rawType === "point") {
+    return {
+      type: "dot",
+      x: clampCanvasX(raw.x, 180),
+      y: clampCanvasY(raw.y, 100),
+      ...(label ? { label: label.slice(0, 28) } : {}),
+    };
+  }
+
+  if (rawType === "text") {
+    const text = asTrimmed(raw.text ?? raw.label, 36);
+    if (!text) return null;
+    const size = raw.size === "sm" || raw.size === "md" || raw.size === "lg" ? raw.size : undefined;
+    const align = raw.align === "start" || raw.align === "middle" || raw.align === "end" ? raw.align : undefined;
+    return {
+      type: "text",
+      x: clampCanvasX(raw.x, 180),
+      y: clampCanvasY(raw.y, 100),
+      text,
+      ...(size ? { size } : {}),
+      ...(align ? { align } : {}),
+    };
+  }
+
+  return null;
+}
+
 /** Normalizes optional AI `sketch` without ever failing the parent note on malformed fields. */
 function sanitizeSketch(raw: unknown): AnnotationSketch | undefined {
   if (!isRecord(raw)) return undefined;
   const rawKind = asTrimmed(raw.kind, 24).toLowerCase();
-  const kind = SKETCH_KIND_ALIASES[rawKind];
-  if (!kind) return undefined;
+  const hasElements = Array.isArray(raw.elements) && raw.elements.length >= 2;
+  const kind = SKETCH_KIND_ALIASES[rawKind] ?? (hasElements ? "canvas" : undefined);
+  if (!kind) {
+    console.warn("[bell-reader] dropped sketch (unknown kind):", JSON.stringify(raw).slice(0, 220));
+    return undefined;
+  }
+
+  const caption = asTrimmed(raw.caption, 48);
+
+  if (kind === "canvas") {
+    const elements = (Array.isArray(raw.elements) ? raw.elements : [])
+      .map(sanitizeSketchElement)
+      .filter((el): el is SketchElement => el !== null)
+      .slice(0, 24);
+    if (elements.length < 2) {
+      console.warn("[bell-reader] dropped canvas sketch (<2 valid elements):", JSON.stringify(raw).slice(0, 240));
+      return undefined;
+    }
+    return {
+      kind: "canvas",
+      nodes: [],
+      elements,
+      ...(caption ? { caption } : {}),
+    };
+  }
 
   const rawNodes = Array.isArray(raw.nodes)
     ? raw.nodes
@@ -89,10 +262,12 @@ function sanitizeSketch(raw: unknown): AnnotationSketch | undefined {
   const nodes = rawNodes
     .map((n) => asTrimmed(n, 24))
     .filter(Boolean)
-    .slice(0, 4);
-  if (nodes.length < 2) return undefined;
+    .slice(0, 5);
+  if (nodes.length < 2) {
+    console.warn("[bell-reader] dropped preset sketch (<2 nodes):", JSON.stringify(raw).slice(0, 220));
+    return undefined;
+  }
 
-  const caption = asTrimmed(raw.caption, 36);
   const rawShape = asTrimmed(raw.shape, 20).toLowerCase();
   const shape =
     kind === "axes" && (SKETCH_CURVE_SHAPES as readonly string[]).includes(rawShape)
@@ -686,10 +861,19 @@ function buildAnnotationRulesBlock(attachedCount: number, hasImages: boolean): s
   }
 3. label 為 2–8 字的手寫小標（例如「核心機制」「常見誤區」「圖表關鍵」「數據轉折」）。
 4. topic 為該則批註對應的子主題名稱（方便連通 BELL Explain 知識庫）。
-5. 僅在確實能讓概念一目了然時（本區挑選 1–2 則即可，不要每則都加），才附加可選欄位 sketch（手繪圖解）：
-   - kind: "flow"（步驟/資料流 2–4 節點）| "compare"（對照/前後比較 2–3 欄）| "layers"（架構分層/堆疊 2–4 層，由上到下）| "axes"（趨勢/權衡曲線 2 端點標籤 + shape: "rise" | "drop" | "peak" | "threshold"）
-   - nodes: 2–4 個極精簡標籤（每標籤建議 <= 10 字，勿寫長句）
-   - caption: 可選 2–10 字圖說。`;
+5. **【圖文並茂筆記（重要）】本區請挑選 2 至 3 則最適合用圖講解的關鍵批註附上 sketch（同一篇文章請多樣搭配，勿只畫方格，也不要每則都加）**：
+   - **A. 自由手繪畫布 (kind: "canvas")** — 最推薦！在 360×200 座標內用 4–12 個 elements 自由畫出貼合該段概念的手寫筆記圖（如循環迴圈圓與弧箭頭、光線追蹤球、資料結構指標、效能曲線與門檻點、概念關聯圖）：
+     - {"type":"ellipse","x":180,"y":100,"rx":52,"ry":38,"fill":true,"dashed":false,"label":"狀態/概念"}（圓形設 rx===ry）
+     - {"type":"arrow","x1":70,"y1":95,"x2":145,"y2":95,"bend":28,"dashed":false,"label":"步驟/流向"}（正負 bend 畫出彎曲弧形箭頭與回饋迴圈）
+     - {"type":"curve","points":[[35,145],[120,65],[225,135],[320,45]],"dashed":false,"closed":false,"fill":false,"label":"曲線"}（平滑波動、趨勢或手繪輪廓）
+     - {"type":"line","x1":40,"y1":160,"x2":320,"y2":160,"dashed":true,"label":"基準/軸線"}
+     - {"type":"dot","x":90,"y":100,"label":"關鍵點"}
+     - {"type":"rect","x":24,"y":40,"w":96,"h":44,"fill":true,"label":"區塊"}
+     - {"type":"text","x":180,"y":28,"text":"手寫旁白重點","size":"md","align":"middle"}
+     （注意字體與元素間距保持 >= 32px，避免擁擠重疊。）
+   - **B. 多元快捷圖型**（依語意混搭）：
+     - "cycle"（環狀循環 2–5 節點）、"tree"（分叉樹：[根, 子1, 子2…]）、"venn"（雙圓交集：[A, B, A∩B]）、"timeline"（時間軸 2–5 節點）、"axes"（雙軸曲線：[左端點, 右端點, 重點] + shape: "rise"|"drop"|"peak"|"threshold"）、"compare"、"layers"、"flow"。
+   - caption: 可選 2–12 字清楚圖說。`;
 }
 
 function resolveRawAnnotations(
@@ -856,7 +1040,16 @@ ${buildAnnotationRulesBlock(lead.chunkImages.length, lead.hasImages)}
       "color": "amber",
       "label": "核心結論",
       "note": "精準易懂的頁邊手寫說明。",
-      "topic": "對應概念"
+      "topic": "對應概念",
+      "sketch": {
+        "kind": "canvas",
+        "caption": "可選圖說（僅在適合視覺化時附上）",
+        "elements": [
+          { "type": "ellipse", "x": 110, "y": 95, "rx": 48, "ry": 36, "fill": true, "label": "核心狀態" },
+          { "type": "arrow", "x1": 162, "y1": 85, "x2": 238, "y2": 85, "bend": -22, "label": "觸發" },
+          { "type": "ellipse", "x": 270, "y": 95, "rx": 48, "ry": 36, "label": "結果" }
+        ]
+      }
     }${
       lead.hasImages
         ? `,
@@ -910,7 +1103,12 @@ ${buildAnnotationRulesBlock(sec.chunkImages.length, sec.hasImages)}
       "color": "violet",
       "label": "關鍵實作",
       "note": "精準易懂的頁邊手寫說明。",
-      "topic": "對應概念"
+      "topic": "對應概念",
+      "sketch": {
+        "kind": "cycle",
+        "nodes": ["階段A", "階段B", "階段C"],
+        "caption": "僅關鍵處附多樣圖解（canvas/cycle/tree/venn/timeline/axes 等）"
+      }
     }
   ]
 }
@@ -1028,7 +1226,7 @@ export async function annotateSelectionWithAI(
     "caption": "可選圖說"
   }
 }
-（sketch 為完全可選欄位：僅當這段選取文字用流程 flow / 對比 compare / 分層 layers / 趨勢 axes 簡圖比純文字更好懂時才附帶；否則省略 sketch 即可。）
+（sketch 為完全可選欄位：若概念用自由手繪 canvas 圖解或 cycle / tree / venn / timeline / axes / compare / layers / flow 簡圖比純文字更好懂才附帶；否則省略 sketch 即可。）
 
 輸入資料：
 ${JSON.stringify({

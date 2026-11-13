@@ -642,6 +642,54 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
     assert.equal(tolerantResult.annotations[1]?.sketch?.kind, "flow");
     assert.equal(tolerantResult.annotations[1]?.sketch?.caption, undefined);
     assert.equal(tolerantResult.annotations[2]?.sketch, undefined);
+
+    // 14. Freeform `canvas` vector sketch persists cleanly and clamps invalid element coordinates
+    const canvasAiResult = await annotatePageWithAI(
+      {
+        ...(enPageBody.page as object),
+        id: "sketch-canvas-test",
+        title: "SDF Canvas Test",
+        blocks: [{ id: "b1", kind: "paragraph", text: "Signed distance fields measure distance to surface boundary." }],
+      } as never,
+      [],
+      { provider: "codex", model: "", autoFolder: false, annotationDensity: "balanced" },
+      new AbortController().signal,
+      async () => ({
+        topic: "SDF Geometry",
+        tags: ["SDF"],
+        summary: "有號距離場示意",
+        annotations: [
+          {
+            blockId: "b1",
+            quote: "distance to surface boundary",
+            style: "box",
+            color: "sky",
+            label: "圓形距離場",
+            note: "圓內負值、邊界為零、外部正值。",
+            topic: "SDF",
+            sketch: {
+              kind: "canvas",
+              caption: "SDF 距離示意",
+              elements: [
+                { type: "ellipse", cx: 180, cy: 95, r: 50, fill: true, dashed: true, label: "d=0" },
+                { type: "dot", x: 70, y: 95, label: "外部點" },
+                { type: "arrow", x1: 76, y1: 95, x2: 128, y2: 95, bend: 18, label: "d > 0" },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    assert.equal(canvasAiResult.annotations[0]?.sketch?.kind, "canvas");
+    assert.equal(canvasAiResult.annotations[0]?.sketch?.elements?.length, 3);
+    const savedCanvas = store.addAnnotation(enPageBody.page.id, {
+      ...canvasAiResult.annotations[0]!,
+      source: "ai",
+    });
+    const reloadedPage = store.getPage(enPageBody.page.id);
+    const reloadedCanvas = reloadedPage?.annotations.find((a) => a.id === savedCanvas.id);
+    assert.equal(reloadedCanvas?.sketch?.kind, "canvas");
+    assert.equal(reloadedCanvas?.sketch?.elements?.length, 3);
   } finally {
     await srv.close();
     store.close();

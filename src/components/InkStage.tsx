@@ -76,11 +76,18 @@ const COLOR_NAMES: Record<InkColor, string> = {
 };
 
 const SKETCH_KIND_LABELS: Record<SketchKind, string> = {
+  canvas: "自由繪製",
+  cycle: "循環",
+  tree: "樹狀",
+  venn: "交集",
+  timeline: "時間軸",
   flow: "流程",
   compare: "對比",
   layers: "階層",
   axes: "趨勢",
 };
+
+const MANUAL_SKETCH_PRESETS = SKETCH_KINDS.filter((k) => k !== "canvas");
 
 const SKETCH_SHAPE_LABELS: Record<SketchCurveShape, string> = {
   rise: "上升",
@@ -94,7 +101,15 @@ function parseSketchNodes(raw: string): string[] {
     .split(/\s*(?:->|→|｜|\||,|、)\s*/)
     .map((s) => s.trim().slice(0, 24))
     .filter(Boolean)
-    .slice(0, 4);
+    .slice(0, 5);
+}
+
+function summarizeSketchForExplain(sketch: AnnotationSketch): string {
+  if (sketch.nodes.length > 0) return sketch.nodes.join(" → ");
+  const texts = (sketch.elements ?? [])
+    .map((el) => ("label" in el ? el.label : "text" in el ? el.text : ""))
+    .filter(Boolean);
+  return texts.join(" · ") || sketch.caption || "手繪概念圖";
 }
 
 function findRangeInElement(container: HTMLElement, start: number, end: number): Range | null {
@@ -283,7 +298,7 @@ function PenNote({
           title: annotation.topic ? `${pageTitle} · ${annotation.topic}` : pageTitle,
           text: `原文摘錄：\n「${annotation.quote}」\n\n頁邊筆記：\n${annotation.note}${
             annotation.sketch
-              ? `\n\n[手繪圖解 (${SKETCH_KIND_LABELS[annotation.sketch.kind]})]：${annotation.sketch.nodes.join(" → ")}${
+              ? `\n\n[手繪圖解 (${SKETCH_KIND_LABELS[annotation.sketch.kind]})]：${summarizeSketchForExplain(annotation.sketch)}${
                   annotation.sketch.caption ? `（${annotation.sketch.caption}）` : ""
                 }`
               : ""
@@ -298,7 +313,7 @@ function PenNote({
   return (
     <aside
       ref={noteRef}
-      className={`pen-note pen-ink-${annotation.color} is-${mode} ${active ? "is-active" : ""}`}
+      className={`pen-note pen-ink-${annotation.color} is-${mode} ${annotation.sketch ? "has-sketch" : ""} ${active ? "is-active" : ""}`}
       style={
         stylePos
           ? {
@@ -346,6 +361,11 @@ function PenNote({
       <p className="pen-note-body">
         <bdi>{annotation.note}</bdi>
       </p>
+      {mode === "under-block" && annotation.sketch ? (
+        <div className="pen-note-quote-ref" title={annotation.quote}>
+          「{annotation.quote.length > 26 ? `${annotation.quote.slice(0, 26)}…` : annotation.quote}」
+        </div>
+      ) : null}
       {annotation.sketch ? (
         <HandSketch sketch={annotation.sketch} color={annotation.color} seed={annotation.id} />
       ) : null}
@@ -361,7 +381,7 @@ function arrowEndpoints(
   anchor: MeasuredAnchor,
   mode: NotePlacement,
   noteBox: BoxRect,
-): { ax: number; ay: number; nx: number; ny: number } {
+): { ax: number; ay: number; nx: number; ny: number } | null {
   const { bounds, lastRect, annotation, spot } = anchor;
 
   if (anchor.blockKind === "image" && spot) {
@@ -391,6 +411,9 @@ function arrowEndpoints(
   }
 
   if (mode === "under-block") {
+    if (!anchor.blockIsSingleLine && anchor.blockBottom - (lastRect.top + lastRect.height) > 28) {
+      return null;
+    }
     const startX = clamp(bounds.left + Math.min(bounds.width * 0.35, 36), bounds.left + 8, bounds.left + bounds.width - 6);
     const startY = lastRect.top + lastRect.height + 2;
     const endX = clamp(startX + 10, noteBox.left + 12, noteBox.left + noteBox.width - 16);
@@ -745,6 +768,16 @@ export default function InkStage({
 
       const quoteBottom = m.lastRect.top + m.lastRect.height;
       const nearBottomOfBlock = m.blockBottom - quoteBottom <= 24;
+      if (m.annotation.sketch) {
+        // Notes carrying hand-drawn diagrams live spaciously under their paragraph so they are large, legible, and never overlap text.
+        const relOffset = clamp(m.bounds.left - paperSpan.left, 0, Math.max(0, paperSpan.width - 480));
+        result.set(id, {
+          mode: "under-block",
+          top: m.bounds.top,
+          left: relOffset,
+        });
+        continue;
+      }
       if (
         !underBlockUsed.has(m.annotation.blockId) &&
         m.annotation.style !== "bracket" &&
@@ -1392,7 +1425,7 @@ export default function InkStage({
                   >
                     無圖解
                   </button>
-                  {SKETCH_KINDS.map((k) => (
+                  {MANUAL_SKETCH_PRESETS.map((k) => (
                     <button
                       key={k}
                       type="button"
@@ -1412,7 +1445,11 @@ export default function InkStage({
                       placeholder={
                         manualSketchKind === "axes"
                           ? "標籤用 -> 隔開（例：成本 -> 延遲 -> 甜蜜點）"
-                          : "節點用 -> 隔開，2至4個（例：輸入 -> 解析 -> 輸出）"
+                          : manualSketchKind === "venn"
+                            ? "集合用 -> 隔開（例：集合A -> 集合B -> 交集）"
+                            : manualSketchKind === "tree"
+                              ? "樹狀用 -> 隔開（例：總問題 -> 子因A -> 子因B）"
+                              : "節點用 -> 隔開，2至5個（例：步驟1 -> 步驟2 -> 步驟3）"
                       }
                       aria-label="手繪圖解節點"
                     />

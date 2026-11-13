@@ -74,6 +74,84 @@ const updatePageSchema = z
   })
   .strict();
 
+const sketchElementSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("rect"),
+      x: z.number().min(0).max(360),
+      y: z.number().min(0).max(220),
+      w: z.number().min(8).max(360),
+      h: z.number().min(8).max(220),
+      fill: z.boolean().optional(),
+      dashed: z.boolean().optional(),
+      label: z.string().trim().max(32).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("ellipse"),
+      x: z.number().min(0).max(360),
+      y: z.number().min(0).max(220),
+      rx: z.number().min(6).max(180),
+      ry: z.number().min(6).max(110),
+      fill: z.boolean().optional(),
+      dashed: z.boolean().optional(),
+      label: z.string().trim().max(32).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("arrow"),
+      x1: z.number().min(0).max(360),
+      y1: z.number().min(0).max(220),
+      x2: z.number().min(0).max(360),
+      y2: z.number().min(0).max(220),
+      bend: z.number().min(-120).max(120).optional(),
+      dashed: z.boolean().optional(),
+      label: z.string().trim().max(28).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("line"),
+      x1: z.number().min(0).max(360),
+      y1: z.number().min(0).max(220),
+      x2: z.number().min(0).max(360),
+      y2: z.number().min(0).max(220),
+      dashed: z.boolean().optional(),
+      label: z.string().trim().max(28).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("curve"),
+      points: z.array(z.tuple([z.number().min(0).max(360), z.number().min(0).max(220)])).min(2).max(12),
+      fill: z.boolean().optional(),
+      dashed: z.boolean().optional(),
+      closed: z.boolean().optional(),
+      label: z.string().trim().max(28).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("dot"),
+      x: z.number().min(0).max(360),
+      y: z.number().min(0).max(220),
+      label: z.string().trim().max(28).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("text"),
+      x: z.number().min(0).max(360),
+      y: z.number().min(0).max(220),
+      text: z.string().trim().min(1).max(36),
+      size: z.enum(["sm", "md", "lg"]).optional(),
+      align: z.enum(["start", "middle", "end"]).optional(),
+    })
+    .strict(),
+]);
+
 const manualAnnotationSchema = z
   .object({
     blockId: z.string().trim().min(1),
@@ -88,11 +166,16 @@ const manualAnnotationSchema = z
     sketch: z
       .object({
         kind: z.enum(SKETCH_KINDS),
-        caption: z.string().trim().max(36).optional(),
-        nodes: z.array(z.string().trim().min(1).max(24)).min(2).max(4),
+        caption: z.string().trim().max(48).optional(),
+        nodes: z.array(z.string().trim().min(1).max(24)).max(5),
         shape: z.enum(SKETCH_CURVE_SHAPES).optional(),
+        elements: z.array(sketchElementSchema).max(24).optional(),
       })
       .strict()
+      .refine(
+        (s) => (s.kind === "canvas" ? (s.elements?.length ?? 0) >= 2 : s.nodes.length >= 2),
+        "手繪圖解至少需要兩個元素或節點。",
+      )
       .optional(),
   })
   .strict();

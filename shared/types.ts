@@ -17,17 +17,37 @@ export type InkStyle = (typeof INK_STYLES)[number];
 export const INK_COLORS = ["amber", "mint", "violet", "coral", "sky"] as const;
 export type InkColor = (typeof INK_COLORS)[number];
 
-export const SKETCH_KINDS = ["flow", "compare", "layers", "axes"] as const;
+export const SKETCH_KINDS = [
+  "canvas",
+  "cycle",
+  "tree",
+  "venn",
+  "timeline",
+  "flow",
+  "compare",
+  "layers",
+  "axes",
+] as const;
 export type SketchKind = (typeof SKETCH_KINDS)[number];
 
 export const SKETCH_CURVE_SHAPES = ["rise", "drop", "peak", "threshold"] as const;
 export type SketchCurveShape = (typeof SKETCH_CURVE_SHAPES)[number];
+
+export type SketchElement =
+  | { type: "rect"; x: number; y: number; w: number; h: number; fill?: boolean; dashed?: boolean; label?: string }
+  | { type: "ellipse"; x: number; y: number; rx: number; ry: number; fill?: boolean; dashed?: boolean; label?: string }
+  | { type: "arrow"; x1: number; y1: number; x2: number; y2: number; bend?: number; dashed?: boolean; label?: string }
+  | { type: "line"; x1: number; y1: number; x2: number; y2: number; dashed?: boolean; label?: string }
+  | { type: "curve"; points: Array<[number, number]>; fill?: boolean; dashed?: boolean; closed?: boolean; label?: string }
+  | { type: "dot"; x: number; y: number; label?: string }
+  | { type: "text"; x: number; y: number; text: string; size?: "sm" | "md" | "lg"; align?: "start" | "middle" | "end" };
 
 export interface AnnotationSketch {
   kind: SketchKind;
   caption?: string;
   nodes: string[];
   shape?: SketchCurveShape;
+  elements?: SketchElement[];
 }
 
 export interface PageAnnotation {

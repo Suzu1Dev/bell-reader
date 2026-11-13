@@ -281,7 +281,10 @@ export class ReaderStore {
     if (row.sketch_json) {
       try {
         const parsed = JSON.parse(row.sketch_json) as AnnotationSketch;
-        if (parsed && Array.isArray(parsed.nodes) && parsed.nodes.length >= 2) {
+        const hasCanvas =
+          parsed?.kind === "canvas" && Array.isArray(parsed.elements) && parsed.elements.length >= 2;
+        const hasNodes = Array.isArray(parsed?.nodes) && parsed.nodes.length >= 2;
+        if (hasCanvas || hasNodes) {
           sketch = parsed;
         }
       } catch {
