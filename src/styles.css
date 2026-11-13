@@ -1823,6 +1823,82 @@ mark.ink-text-hit.is-active {
   text-decoration-color: currentColor;
 }
 
+/* ── Hand-Drawn Explanatory Sketches inside Margin Notes ─────────────────── */
+.hand-sketch {
+  margin: 6px 0 0;
+  padding: 5px 6px 4px;
+  width: 100%;
+  max-width: 244px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed color-mix(in srgb, currentColor 28%, transparent);
+  background: color-mix(in srgb, var(--paper-sheet) 88%, currentColor 5%);
+  text-align: center;
+}
+
+.margin-lane-left .hand-sketch {
+  margin-left: auto;
+}
+
+.hand-sketch.is-compact {
+  max-width: 210px;
+  padding: 4px 5px 3px;
+}
+
+.hand-sketch-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.hand-sketch-fill {
+  stroke: none;
+  opacity: 0.42;
+}
+
+.hand-sketch-fill.ink-fill-amber { fill: var(--ink-amber-wash); }
+.hand-sketch-fill.ink-fill-mint { fill: var(--ink-mint-wash); }
+.hand-sketch-fill.ink-fill-violet { fill: var(--ink-violet-wash); }
+.hand-sketch-fill.ink-fill-coral { fill: var(--ink-coral-wash); }
+.hand-sketch-fill.ink-fill-sky { fill: var(--ink-sky-wash); }
+
+.hand-sketch-stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.85;
+}
+
+.hand-sketch-accent {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hand-sketch-label {
+  fill: currentColor;
+  font-family: var(--font-pen);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.hand-sketch-label.is-small {
+  font-size: 10px;
+  opacity: 0.9;
+}
+
+.hand-sketch-caption {
+  margin-top: 2px;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--text-3);
+}
+
 /* ── Floating Selection Pen Bar ──────────────────────────────────────────── */
 .selection-pen-bar {
   position: absolute;
@@ -1930,6 +2006,13 @@ mark.ink-text-hit.is-active {
 
 .pen-manual-form {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.pen-manual-row {
+  display: flex;
   align-items: center;
   gap: 6px;
 }
@@ -1948,6 +2031,57 @@ mark.ink-text-hit.is-active {
 .pen-manual-form input.pen-label-input {
   flex: 0 0 118px;
   min-width: 0;
+}
+
+.pen-sketch-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.pen-sketch-kinds,
+.pen-sketch-shapes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.pen-sketch-chip {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-xs);
+  background: var(--paper-sheet);
+  color: var(--text-2);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--dur-1), border-color var(--dur-1), color var(--dur-1);
+}
+
+.pen-sketch-chip:hover {
+  background: var(--fill-hover);
+  color: var(--text);
+}
+
+.pen-sketch-chip.is-selected {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--paper-sheet);
+}
+
+.pen-sketch-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.pen-sketch-preview {
+  display: flex;
+  justify-content: center;
+  padding: 2px 0;
 }
 
 /* ── Unified BELL Suite Command Switcher ─────────────────────────────────── */

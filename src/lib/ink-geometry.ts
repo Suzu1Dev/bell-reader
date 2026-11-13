@@ -1,5 +1,6 @@
 import rough from "roughjs";
 import type { Drawable, OpSet } from "roughjs/bin/core";
+import type { AnnotationSketch } from "../../shared/types";
 
 export interface BoxRect {
   left: number;
@@ -230,4 +231,336 @@ export function layoutMarginNotes(slots: readonly MarginNoteSlot[], gap = 12): P
     cursor = top + Math.max(36, Math.round(slot.height)) + gap;
     return { id: slot.id, top };
   });
+}
+
+export interface SketchLabel {
+  x: number;
+  y: number;
+  lines: string[];
+  align?: "start" | "middle" | "end";
+  small?: boolean;
+}
+
+export interface SketchDiagramData {
+  width: number;
+  height: number;
+  fillPaths: string[];
+  strokePaths: string[];
+  accentPaths: string[];
+  labels: SketchLabel[];
+}
+
+function wrapSketchText(text: string, maxUnits: number): string[] {
+  const clean = text.trim();
+  if (!clean) return [""];
+  // Split CJK/Latin strings by approximate glyph width into max 2 lines.
+  const unitOf = (ch: string) => {
+    const c = ch.charCodeAt(0);
+    if (c > 0x2e7f) return 1.75;
+    if ("()[]{}.,:-/ ".includes(ch)) return 0.6;
+    return 0.85;
+  };
+  let total = 0;
+  for (const ch of clean) total += unitOf(ch);
+  if (total <= maxUnits) return [clean];
+
+  let acc = 0;
+  let splitAt = clean.length;
+  for (let i = 0; i < clean.length; i++) {
+    acc += unitOf(clean[i]);
+    if (acc >= maxUnits && splitAt === clean.length) {
+      splitAt = i + 1;
+      break;
+    }
+  }
+  const spaceIdx = clean.lastIndexOf(" ", splitAt);
+  const cut = spaceIdx > 1 ? spaceIdx : splitAt;
+  const line1 = clean.slice(0, cut).trim();
+  const rest = clean.slice(cut).trim();
+  if (!rest) return [line1];
+  let line2 = "";
+  let rUnits = 0;
+  for (const ch of rest) {
+    const u = unitOf(ch);
+    if (rUnits + u > maxUnits - 1 && rest.length > line2.length + 1) {
+      line2 += "…";
+      break;
+    }
+    line2 += ch;
+    rUnits += u;
+  }
+  return [line1, line2];
+}
+
+function softWashQuad(x: number, y: number, w: number, h: number): string {
+  return `M ${(x + 1.5).toFixed(1)} ${(y + 1).toFixed(1)} L ${(x + w - 1).toFixed(1)} ${(y + 1.5).toFixed(1)} L ${(x + w - 1.5).toFixed(1)} ${(y + h - 1).toFixed(1)} L ${(x + 1).toFixed(1)} ${(y + h - 1.5).toFixed(1)} Z`;
+}
+
+function sketchArrow(x1: number, y1: number, x2: number, y2: number, s: number): string {
+  const line = generator.line(x1, y1, x2, y2, {
+    seed: s,
+    roughness: 0.75,
+    disableMultiStroke: true,
+  });
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  const tip = generator.linearPath(
+    [
+      [x2 - ux * 5.2 - uy * 3.1, y2 - uy * 5.2 + ux * 3.1],
+      [x2, y2],
+      [x2 - ux * 5.2 + uy * 3.1, y2 - uy * 5.2 - ux * 3.1],
+    ],
+    { seed: s + 7, roughness: 0.65, disableMultiStroke: true },
+  );
+  return `${drawableToSvgPath(line)} ${drawableToSvgPath(tip)}`;
+}
+
+/**
+ * Deterministic Rough.js explanatory diagram rendered inside margin note cards
+ * for 4 structural primitives (`flow`, `compare`, `layers`, `axes`).
+ */
+export function buildSketchDiagram(sketch: AnnotationSketch, seed: string): SketchDiagramData {
+  const s = seedInt(`sk:${seed}:${sketch.kind}`);
+  const nodes = sketch.nodes.slice(0, 4);
+  const width = 232;
+  const fillPaths: string[] = [];
+  const strokePaths: string[] = [];
+  const accentPaths: string[] = [];
+  const labels: SketchLabel[] = [];
+
+  if (sketch.kind === "flow") {
+    if (nodes.length <= 3) {
+      const height = 66;
+      const n = Math.max(2, nodes.length);
+      const padX = 6;
+      const arrowW = n === 2 ? 32 : 16;
+      const boxW = (width - padX * 2 - arrowW * (n - 1)) / n;
+      const boxH = 40;
+      const boxY = 13;
+      const maxUnits = n === 2 ? 12.5 : 8.5;
+
+      nodes.forEach((node, i) => {
+        const bx = padX + i * (boxW + arrowW);
+        if (i === 0 || i === n - 1) fillPaths.push(softWashQuad(bx, boxY, boxW, boxH));
+        strokePaths.push(
+          drawableToSvgPath(
+            generator.rectangle(bx, boxY, boxW, boxH, {
+              seed: s + i * 17,
+              roughness: 0.9,
+              disableMultiStroke: true,
+            }),
+          ),
+        );
+        labels.push({
+          x: bx + boxW / 2,
+          y: boxY + boxH / 2,
+          lines: wrapSketchText(node, maxUnits),
+          align: "middle",
+        });
+        if (i < n - 1) {
+          accentPaths.push(sketchArrow(bx + boxW + 3, boxY + boxH / 2, bx + boxW + arrowW - 3, boxY + boxH / 2, s + 100 + i));
+        }
+      });
+      return { width, height, fillPaths, strokePaths, accentPaths, labels };
+    }
+
+    // 4-node 2x2 pipeline
+    const height = 104;
+    const boxW = 92;
+    const boxH = 34;
+    const positions: Array<[number, number]> = [
+      [8, 10],
+      [132, 10],
+      [8, 60],
+      [132, 60],
+    ];
+    nodes.forEach((node, i) => {
+      const [bx, by] = positions[i];
+      if (i === 0 || i === 3) fillPaths.push(softWashQuad(bx, by, boxW, boxH));
+      strokePaths.push(
+        drawableToSvgPath(
+          generator.rectangle(bx, by, boxW, boxH, {
+            seed: s + i * 19,
+            roughness: 0.9,
+            disableMultiStroke: true,
+          }),
+        ),
+      );
+      labels.push({
+        x: bx + boxW / 2,
+        y: by + boxH / 2,
+        lines: wrapSketchText(node, 11.5),
+        align: "middle",
+      });
+    });
+    accentPaths.push(sketchArrow(103, 27, 129, 27, s + 201));
+    accentPaths.push(sketchArrow(148, 45, 84, 59, s + 202));
+    accentPaths.push(sketchArrow(103, 77, 129, 77, s + 203));
+    return { width, height, fillPaths, strokePaths, accentPaths, labels };
+  }
+
+  if (sketch.kind === "compare") {
+    const height = 74;
+    const n = Math.max(2, Math.min(3, nodes.length));
+    const padX = 4;
+    const gap = 5;
+    const colW = (width - padX * 2 - gap * (n - 1)) / n;
+    const boxH = 52;
+    const boxY = 11;
+    const maxUnits = n === 2 ? 14.5 : 9.8;
+
+    nodes.slice(0, n).forEach((node, i) => {
+      const cx = padX + i * (colW + gap);
+      if (i === n - 1) fillPaths.push(softWashQuad(cx, boxY, colW, boxH));
+      strokePaths.push(
+        drawableToSvgPath(
+          generator.rectangle(cx, boxY, colW, boxH, {
+            seed: s + i * 23,
+            roughness: 0.85,
+            disableMultiStroke: true,
+          }),
+        ),
+      );
+      strokePaths.push(
+        drawableToSvgPath(
+          generator.line(cx + 8, boxY + 14, cx + colW - 8, boxY + 14, {
+            seed: s + i * 29 + 5,
+            roughness: 0.7,
+            disableMultiStroke: true,
+          }),
+        ),
+      );
+      labels.push({
+        x: cx + colW / 2,
+        y: boxY + 34,
+        lines: wrapSketchText(node, maxUnits),
+        align: "middle",
+      });
+    });
+    return { width, height, fillPaths, strokePaths, accentPaths, labels };
+  }
+
+  if (sketch.kind === "layers") {
+    const count = Math.max(2, nodes.length);
+    const slabH = 22;
+    const gap = 5;
+    const topPad = 8;
+    const height = topPad * 2 + count * slabH + (count - 1) * gap;
+    const slabX = 12;
+    const slabW = width - 24;
+
+    nodes.forEach((node, i) => {
+      const sy = topPad + i * (slabH + gap);
+      if (i % 2 === 0) fillPaths.push(softWashQuad(slabX, sy, slabW, slabH));
+      strokePaths.push(
+        drawableToSvgPath(
+          generator.rectangle(slabX, sy, slabW, slabH, {
+            seed: s + i * 31,
+            roughness: 0.85,
+            disableMultiStroke: true,
+          }),
+        ),
+      );
+      labels.push({
+        x: slabX + slabW / 2,
+        y: sy + slabH / 2 + 1,
+        lines: wrapSketchText(node, 22),
+        align: "middle",
+      });
+    });
+    return { width, height, fillPaths, strokePaths, accentPaths, labels };
+  }
+
+  // axes (2–3 labels + curve shape)
+  const height = 90;
+  strokePaths.push(sketchArrow(26, 68, 26, 12, s + 11));
+  strokePaths.push(sketchArrow(26, 68, 218, 68, s + 12));
+
+  const shape = sketch.shape ?? "rise";
+  const curvePts: Array<[number, number]> =
+    shape === "drop"
+      ? [
+          [34, 18],
+          [82, 35],
+          [144, 54],
+          [206, 61],
+        ]
+      : shape === "peak"
+        ? [
+            [34, 59],
+            [82, 42],
+            [120, 16],
+            [158, 42],
+            [206, 59],
+          ]
+        : shape === "threshold"
+          ? [
+              [34, 57],
+              [102, 55],
+              [126, 33],
+              [154, 19],
+              [206, 18],
+            ]
+          : [
+              [34, 62],
+              [86, 56],
+              [146, 37],
+              [206, 16],
+            ];
+
+  accentPaths.push(
+    drawableToSvgPath(
+      generator.curve(curvePts, {
+        seed: s + 41,
+        roughness: 0.75,
+        bowing: 0.7,
+        disableMultiStroke: true,
+      }),
+    ),
+  );
+
+  if (shape === "peak" || shape === "threshold") {
+    const markerX = shape === "peak" ? 120 : 116;
+    strokePaths.push(
+      drawableToSvgPath(
+        generator.line(markerX, 18, markerX, 68, {
+          seed: s + 53,
+          roughness: 0.6,
+          disableMultiStroke: true,
+        }),
+      ),
+    );
+  }
+
+  if (nodes[0]) {
+    labels.push({
+      x: 28,
+      y: 82,
+      lines: wrapSketchText(nodes[0], 12),
+      align: "start",
+      small: true,
+    });
+  }
+  if (nodes[1]) {
+    labels.push({
+      x: 218,
+      y: 82,
+      lines: wrapSketchText(nodes[1], 12),
+      align: "end",
+      small: true,
+    });
+  }
+  if (nodes[2]) {
+    labels.push({
+      x: 122,
+      y: 12,
+      lines: wrapSketchText(nodes[2], 14),
+      align: "middle",
+      small: true,
+    });
+  }
+  return { width, height, fillPaths, strokePaths, accentPaths, labels };
 }

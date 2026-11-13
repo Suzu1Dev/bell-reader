@@ -512,6 +512,71 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
     });
     assert.equal(sparseAnnRes.status, 200);
     assert.equal(lastDensity, "sparse");
+
+    // 12. Manual & AI annotations with structured hand-drawn `sketch` persist cleanly
+    const sketchAnnRes = await fetch(`${srv.url}/api/pages/${enPageBody.page.id}/annotations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        blockId: "b1",
+        quote: "loads ELF images",
+        style: "underline",
+        color: "sky",
+        label: "載入流程",
+        note: "ELF 解析後寫入對應記憶體區段。",
+        sketch: {
+          kind: "flow",
+          nodes: ["ELF 檔", "Header 解析", "寫入 RAM"],
+          caption: "開機載入管線",
+        },
+      }),
+    });
+    assert.equal(sketchAnnRes.status, 201);
+    const sketchAnnBody = (await sketchAnnRes.json()) as {
+      annotation: { sketch?: { kind: string; nodes: string[]; caption?: string } };
+      page: { annotations: Array<{ sketch?: { kind: string; nodes: string[] } }> };
+    };
+    assert.equal(sketchAnnBody.annotation.sketch?.kind, "flow");
+    assert.deepEqual(sketchAnnBody.annotation.sketch?.nodes, ["ELF 檔", "Header 解析", "寫入 RAM"]);
+    assert.equal(sketchAnnBody.annotation.sketch?.caption, "開機載入管線");
+    assert.ok(sketchAnnBody.page.annotations.some((a) => a.sketch?.kind === "flow"));
+
+    const aiSketchResult = await annotatePageWithAI(
+      {
+        ...(enPageBody.page as object),
+        id: "sketch-ai-test",
+        title: "RISC-V Lab",
+        topic: "Systems",
+        blocks: [{ id: "b1", kind: "paragraph", text: "Pipeline throughput saturates past the memory bandwidth knee." }],
+      } as never,
+      [],
+      { provider: "codex", model: "", autoFolder: false, annotationDensity: "balanced" },
+      new AbortController().signal,
+      async () => ({
+        topic: "Memory Bandwidth",
+        tags: ["Bandwidth"],
+        summary: "記憶體頻寬限制了算力上限。",
+        suggestedFolder: "系統架構",
+        annotations: [
+          {
+            blockId: "b1",
+            quote: "memory bandwidth knee",
+            style: "highlight",
+            color: "coral",
+            label: "效能拐點",
+            note: "超過頻寬上限後吞吐不再上升。",
+            topic: "Bottleneck",
+            sketch: {
+              kind: "axes",
+              nodes: ["計算量", "頻寬上限", "拐點"],
+              shape: "threshold",
+            },
+          },
+        ],
+      }),
+    );
+    assert.equal(aiSketchResult.annotations[0]?.sketch?.kind, "axes");
+    assert.equal(aiSketchResult.annotations[0]?.sketch?.shape, "threshold");
   } finally {
     await srv.close();
     store.close();

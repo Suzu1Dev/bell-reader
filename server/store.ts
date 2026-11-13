@@ -7,6 +7,7 @@ import {
   ANNOTATION_DENSITIES,
   INK_COLORS,
   type AnnotationDensity,
+  type AnnotationSketch,
   type Folder,
   type InkColor,
   type InkStyle,
@@ -61,6 +62,7 @@ interface AnnotationRow {
   topic: string | null;
   anchor_x: number | null;
   anchor_y: number | null;
+  sketch_json: string | null;
   source: "ai" | "user";
   created_at: string;
 }
@@ -134,6 +136,7 @@ export class ReaderStore {
     if (!colNames.has("anchor_x")) this.db.exec("ALTER TABLE annotations ADD COLUMN anchor_x REAL");
     if (!colNames.has("anchor_y")) this.db.exec("ALTER TABLE annotations ADD COLUMN anchor_y REAL");
     if (!colNames.has("translated_quote")) this.db.exec("ALTER TABLE annotations ADD COLUMN translated_quote TEXT");
+    if (!colNames.has("sketch_json")) this.db.exec("ALTER TABLE annotations ADD COLUMN sketch_json TEXT");
 
     const pageCols = this.db.prepare("PRAGMA table_info(pages)").all() as Array<{ name: string }>;
     const pageColNames = new Set(pageCols.map((c) => c.name));
@@ -274,6 +277,17 @@ export class ReaderStore {
   }
 
   private mapAnnotation(row: AnnotationRow): PageAnnotation {
+    let sketch: AnnotationSketch | undefined;
+    if (row.sketch_json) {
+      try {
+        const parsed = JSON.parse(row.sketch_json) as AnnotationSketch;
+        if (parsed && Array.isArray(parsed.nodes) && parsed.nodes.length >= 2) {
+          sketch = parsed;
+        }
+      } catch {
+        sketch = undefined;
+      }
+    }
     return {
       id: row.id,
       pageId: row.page_id,
@@ -288,6 +302,7 @@ export class ReaderStore {
       note: row.note,
       ...(row.topic ? { topic: row.topic } : {}),
       ...(row.anchor_x !== null && row.anchor_y !== null ? { anchorX: row.anchor_x, anchorY: row.anchor_y } : {}),
+      ...(sketch ? { sketch } : {}),
       source: row.source,
       createdAt: row.created_at,
     };
@@ -477,8 +492,8 @@ export class ReaderStore {
       this.db.prepare("DELETE FROM annotations WHERE page_id = ? AND source = 'ai'").run(pageId);
       const insert = this.db.prepare(`
         INSERT INTO annotations (
-          id, page_id, block_id, quote, translated_quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?)
+          id, page_id, block_id, quote, translated_quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, sketch_json, source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?)
       `);
       for (const item of result.annotations) {
         insert.run(
@@ -496,6 +511,7 @@ export class ReaderStore {
           item.topic ?? null,
           item.anchorX ?? null,
           item.anchorY ?? null,
+          item.sketch ? JSON.stringify(item.sketch) : null,
           now,
         );
       }
@@ -533,8 +549,8 @@ export class ReaderStore {
     this.db
       .prepare(`
         INSERT INTO annotations (
-          id, page_id, block_id, quote, translated_quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, page_id, block_id, quote, translated_quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, sketch_json, source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -551,6 +567,7 @@ export class ReaderStore {
         item.topic ? item.topic.slice(0, 40) : null,
         item.anchorX ?? null,
         item.anchorY ?? null,
+        item.sketch ? JSON.stringify(item.sketch) : null,
         item.source,
         now,
       );

@@ -2,13 +2,19 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { AudioLines, Braces, Circle, Highlighter, PenLine, Sparkles, Trash2, Underline, X } from "lucide-react";
 import {
   INK_COLORS,
+  SKETCH_CURVE_SHAPES,
+  SKETCH_KINDS,
+  type AnnotationSketch,
   type InkColor,
   type InkStyle,
   type PageAnnotation,
   type ReaderBlock,
   type SavedPage,
+  type SketchCurveShape,
+  type SketchKind,
 } from "../../shared/types";
 import { explainDraftHref } from "../../shared/suite";
+import HandSketch from "./HandSketch";
 import {
   bracketPath,
   handBoxPath,
@@ -68,6 +74,28 @@ const COLOR_NAMES: Record<InkColor, string> = {
   coral: "硃砂紅",
   sky: "鋼筆藍",
 };
+
+const SKETCH_KIND_LABELS: Record<SketchKind, string> = {
+  flow: "流程",
+  compare: "對比",
+  layers: "階層",
+  axes: "趨勢",
+};
+
+const SKETCH_SHAPE_LABELS: Record<SketchCurveShape, string> = {
+  rise: "上升",
+  drop: "下降",
+  peak: "峰值",
+  threshold: "閾值",
+};
+
+function parseSketchNodes(raw: string): string[] {
+  return raw
+    .split(/\s*(?:->|→|｜|\||,|、)\s*/)
+    .map((s) => s.trim().slice(0, 24))
+    .filter(Boolean)
+    .slice(0, 4);
+}
 
 function findRangeInElement(container: HTMLElement, start: number, end: number): Range | null {
   if (end <= start) return null;
@@ -253,7 +281,13 @@ function PenNote({
         explainOrigin,
         {
           title: annotation.topic ? `${pageTitle} · ${annotation.topic}` : pageTitle,
-          text: `原文摘錄：\n「${annotation.quote}」\n\n頁邊筆記：\n${annotation.note}`,
+          text: `原文摘錄：\n「${annotation.quote}」\n\n頁邊筆記：\n${annotation.note}${
+            annotation.sketch
+              ? `\n\n[手繪圖解 (${SKETCH_KIND_LABELS[annotation.sketch.kind]})]：${annotation.sketch.nodes.join(" → ")}${
+                  annotation.sketch.caption ? `（${annotation.sketch.caption}）` : ""
+                }`
+              : ""
+          }`,
           back: `#/page/${pageId}`,
         },
         typeof window !== "undefined" ? window.location.hostname : "",
@@ -312,6 +346,9 @@ function PenNote({
       <p className="pen-note-body">
         <bdi>{annotation.note}</bdi>
       </p>
+      {annotation.sketch ? (
+        <HandSketch sketch={annotation.sketch} color={annotation.color} seed={annotation.id} />
+      ) : null}
     </aside>
   );
 }
@@ -415,6 +452,7 @@ export default function InkStage({
     note: string;
     anchorX?: number;
     anchorY?: number;
+    sketch?: AnnotationSketch;
   }) => Promise<void>;
   onDeleteAnnotation: (annotationId: string) => void;
 }) {
@@ -440,6 +478,29 @@ export default function InkStage({
   const [manualOpen, setManualOpen] = useState(false);
   const [manualLabel, setManualLabel] = useState("");
   const [manualNote, setManualNote] = useState("");
+  const [manualSketchKind, setManualSketchKind] = useState<SketchKind | "none">("none");
+  const [manualSketchNodes, setManualSketchNodes] = useState("");
+  const [manualSketchShape, setManualSketchShape] = useState<SketchCurveShape>("rise");
+
+  const resetManualDraft = useCallback((open = false) => {
+    setManualOpen(open);
+    setManualLabel("");
+    setManualNote("");
+    setManualSketchKind("none");
+    setManualSketchNodes("");
+    setManualSketchShape("rise");
+  }, []);
+
+  const draftSketch = useMemo<AnnotationSketch | undefined>(() => {
+    if (manualSketchKind === "none") return undefined;
+    const nodes = parseSketchNodes(manualSketchNodes);
+    if (nodes.length < 2) return undefined;
+    return {
+      kind: manualSketchKind,
+      nodes,
+      ...(manualSketchKind === "axes" ? { shape: manualSketchShape } : {}),
+    };
+  }, [manualSketchKind, manualSketchNodes, manualSketchShape]);
 
   const blockKindById = useMemo(() => {
     const m = new Map<string, ReaderBlock["kind"]>();
@@ -664,7 +725,7 @@ export default function InkStage({
       const isShortHeadingOrItem = m.blockKind === "heading" || m.blockKind === "list";
       const rightGapAfterBlock = paperRight - m.blockTextRight;
 
-      if (isShortHeadingOrItem && m.blockIsSingleLine && rightGapAfterBlock >= 215 && noteH <= 58) {
+      if (isShortHeadingOrItem && m.blockIsSingleLine && rightGapAfterBlock >= 215 && noteH <= 58 && !m.annotation.sketch) {
         const candTop = Math.max(4, m.bounds.top - 4);
         const candBottom = candTop + noteH;
         const collides = inlineOccupiedBands.some((b) => candTop < b.bottom + 10 && candBottom > b.top - 10);
@@ -736,9 +797,7 @@ export default function InkStage({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setSelection(null);
-        setManualOpen(false);
-        setManualLabel("");
-        setManualNote("");
+        resetManualDraft(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -757,9 +816,7 @@ export default function InkStage({
     const spotY = imgRect.top - stageRect.top + anchorY * imgRect.height;
 
     window.getSelection()?.removeAllRanges();
-    setManualOpen(true);
-    setManualLabel("");
-    setManualNote("");
+    resetManualDraft(true);
     setSelection({
       blockId: block.id,
       quote: block.alt || "圖片註記",
@@ -792,9 +849,7 @@ export default function InkStage({
 
     const stageRect = stageRef.current.getBoundingClientRect();
     const selRect = range.getBoundingClientRect();
-    setManualOpen(false);
-    setManualLabel("");
-    setManualNote("");
+    resetManualDraft(false);
     setSelection({
       blockId: node.dataset.blockText,
       quote,
@@ -1269,9 +1324,7 @@ export default function InkStage({
                 aria-label="取消圖形筆記"
                 onClick={() => {
                   setSelection(null);
-                  setManualOpen(false);
-                  setManualLabel("");
-                  setManualNote("");
+                  resetManualDraft(false);
                 }}
               >
                 <X size={13} aria-hidden="true" />
@@ -1287,10 +1340,9 @@ export default function InkStage({
                 const target = selection;
                 const text = manualNote.trim();
                 const label = manualLabel.trim() || (target.isImage ? "圖形註記" : undefined);
+                const sketchToSend = draftSketch;
                 setSelection(null);
-                setManualOpen(false);
-                setManualLabel("");
-                setManualNote("");
+                resetManualDraft(false);
                 window.getSelection()?.removeAllRanges();
                 await onManualSelection({
                   blockId: target.blockId,
@@ -1302,32 +1354,90 @@ export default function InkStage({
                   ...(target.isImage && target.anchorX !== undefined && target.anchorY !== undefined
                     ? { anchorX: target.anchorX, anchorY: target.anchorY }
                     : {}),
+                  ...(sketchToSend ? { sketch: sketchToSend } : {}),
                 });
               }}
             >
-              {selection.isImage ? (
+              <div className="pen-manual-row">
+                {selection.isImage ? (
+                  <input
+                    type="text"
+                    className="pen-label-input"
+                    value={manualLabel}
+                    onChange={(e) => setManualLabel(e.target.value)}
+                    placeholder="標籤（如：重點）"
+                    aria-label="圖形標籤"
+                    maxLength={16}
+                  />
+                ) : null}
                 <input
                   type="text"
-                  className="pen-label-input"
-                  value={manualLabel}
-                  onChange={(e) => setManualLabel(e.target.value)}
-                  placeholder="標籤（如：重點）"
-                  aria-label="圖形標籤"
-                  maxLength={16}
+                  value={manualNote}
+                  onChange={(e) => setManualNote(e.target.value)}
+                  placeholder={selection.isImage ? "寫下對這個圖形／結果的附註或注意事項…" : "寫下頁邊筆記…"}
+                  aria-label="頁邊筆記內容"
+                  maxLength={300}
+                  autoFocus
                 />
-              ) : null}
-              <input
-                type="text"
-                value={manualNote}
-                onChange={(e) => setManualNote(e.target.value)}
-                placeholder={selection.isImage ? "寫下對這個圖形／結果的附註或注意事項…" : "寫下頁邊筆記…"}
-                aria-label="頁邊筆記內容"
-                maxLength={300}
-                autoFocus
-              />
-              <button type="submit" className="pen-action-btn is-primary">
-                儲存
-              </button>
+                <button type="submit" className="pen-action-btn is-primary">
+                  儲存
+                </button>
+              </div>
+              <div className="pen-sketch-composer">
+                <div className="pen-sketch-kinds" role="group" aria-label="附帶手繪圖解">
+                  <button
+                    type="button"
+                    className={`pen-sketch-chip ${manualSketchKind === "none" ? "is-selected" : ""}`}
+                    onClick={() => setManualSketchKind("none")}
+                  >
+                    無圖解
+                  </button>
+                  {SKETCH_KINDS.map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      className={`pen-sketch-chip ${manualSketchKind === k ? "is-selected" : ""}`}
+                      onClick={() => setManualSketchKind(k)}
+                    >
+                      {SKETCH_KIND_LABELS[k]}
+                    </button>
+                  ))}
+                </div>
+                {manualSketchKind !== "none" ? (
+                  <div className="pen-sketch-fields">
+                    <input
+                      type="text"
+                      value={manualSketchNodes}
+                      onChange={(e) => setManualSketchNodes(e.target.value)}
+                      placeholder={
+                        manualSketchKind === "axes"
+                          ? "標籤用 -> 隔開（例：成本 -> 延遲 -> 甜蜜點）"
+                          : "節點用 -> 隔開，2至4個（例：輸入 -> 解析 -> 輸出）"
+                      }
+                      aria-label="手繪圖解節點"
+                    />
+                    {manualSketchKind === "axes" ? (
+                      <div className="pen-sketch-shapes" role="group" aria-label="曲線形狀">
+                        {SKETCH_CURVE_SHAPES.map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            className={`pen-sketch-chip ${manualSketchShape === s ? "is-selected" : ""}`}
+                            onClick={() => setManualSketchShape(s)}
+                          >
+                            {SKETCH_SHAPE_LABELS[s]}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    {draftSketch ? (
+                      <div className="pen-sketch-preview">
+                        <HandSketch sketch={draftSketch} color={penColor} seed="draft-preview" compact />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             </form>
           ) : null}
         </div>

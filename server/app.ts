@@ -8,6 +8,8 @@ import {
   ANNOTATION_DENSITIES,
   INK_COLORS,
   INK_STYLES,
+  SKETCH_CURVE_SHAPES,
+  SKETCH_KINDS,
 } from "../shared/types.js";
 import {
   SUITE_LIMITS,
@@ -83,6 +85,15 @@ const manualAnnotationSchema = z
     topic: z.string().trim().max(28).optional(),
     anchorX: z.number().min(0).max(1).optional(),
     anchorY: z.number().min(0).max(1).optional(),
+    sketch: z
+      .object({
+        kind: z.enum(SKETCH_KINDS),
+        caption: z.string().trim().max(36).optional(),
+        nodes: z.array(z.string().trim().min(1).max(24)).min(2).max(4),
+        shape: z.enum(SKETCH_CURVE_SHAPES).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -497,6 +508,7 @@ export function createApp(options: CreateAppOptions) {
       ...(isImage && parsed.data.anchorX !== undefined && parsed.data.anchorY !== undefined
         ? { anchorX: parsed.data.anchorX, anchorY: parsed.data.anchorY }
         : {}),
+      ...(parsed.data.sketch ? { sketch: parsed.data.sketch } : {}),
       source: "user",
     });
     res.status(201).json({ annotation: created, page: store.getPage(page.id)! });

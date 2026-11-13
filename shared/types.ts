@@ -17,6 +17,19 @@ export type InkStyle = (typeof INK_STYLES)[number];
 export const INK_COLORS = ["amber", "mint", "violet", "coral", "sky"] as const;
 export type InkColor = (typeof INK_COLORS)[number];
 
+export const SKETCH_KINDS = ["flow", "compare", "layers", "axes"] as const;
+export type SketchKind = (typeof SKETCH_KINDS)[number];
+
+export const SKETCH_CURVE_SHAPES = ["rise", "drop", "peak", "threshold"] as const;
+export type SketchCurveShape = (typeof SKETCH_CURVE_SHAPES)[number];
+
+export interface AnnotationSketch {
+  kind: SketchKind;
+  caption?: string;
+  nodes: string[];
+  shape?: SketchCurveShape;
+}
+
 export interface PageAnnotation {
   id: string;
   pageId: string;
@@ -32,6 +45,7 @@ export interface PageAnnotation {
   topic?: string;
   anchorX?: number;
   anchorY?: number;
+  sketch?: AnnotationSketch;
   source: "ai" | "user";
   createdAt: string;
 }
