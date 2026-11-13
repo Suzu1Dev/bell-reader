@@ -1,8 +1,8 @@
 /**
- * suite-contract v1 (rev. e: adds "reader" as the 4th BELL Suite product)
+ * suite-contract v1 (rev. f: adds "campaign" as the 5th BELL Suite product)
  */
 
-export const SUITE_APP_IDS = ["explain", "personal", "pr", "reader"] as const;
+export const SUITE_APP_IDS = ["explain", "personal", "pr", "reader", "campaign"] as const;
 export type SuiteAppId = (typeof SUITE_APP_IDS)[number];
 export type SuiteLinks = Partial<Record<SuiteAppId, string>>;
 
@@ -17,7 +17,7 @@ export const SUITE_LIMITS = {
   capabilities: 16,
   displayName: 40,
   summary: 40,
-  links: 4,
+  links: 5,
   handoffText: 2000,
   handoffTitle: 120,
   back: 512,
@@ -36,8 +36,20 @@ const SINGLE_HANDOFF_PARAMS = ["text", "title", "draft", "from", "back"] as cons
 export const SUITE_ROUTES: Record<SuiteAppId, readonly string[]> = {
   explain: ["#/", "#/library", "#/graph", "#/favorites", "#/repositories", "#/review", "#/note/{id}"],
   personal: ["#/today", "#/tasks", "#/tasks/{id}", "#/events", "#/events/{id}", "#/ideas", "#/ideas/{id}", "#/inbox", "#/inbox/{id}"],
-  pr: [],
+  pr: ["#/", "#/home", "#/demo", "#/repos", "#/repos/{id}", "#/discover", "#/team", "#/group", "#/learning", "#/settings", "#/runs/{id}"],
   reader: ["#/", "#/library", "#/topics", "#/page/{id}"],
+  campaign: [
+    "#/",
+    "#/schedule",
+    "#/tasks",
+    "#/partners",
+    "#/forms",
+    "#/files",
+    "#/meetings",
+    "#/inspirations",
+    "#/notes",
+    "#/bot",
+  ],
 };
 
 export interface SuiteCapability {
@@ -214,4 +226,23 @@ export function personalTaskHref(
     params.set("back", back);
   }
   return `${origin}/#/tasks?${params.toString()}`;
+}
+
+export function prDraftHref(
+  prOrigin: string | undefined,
+  input: { draft: string; title?: string; back?: string },
+  currentHostname = "",
+): string | undefined {
+  const origin = safeSuiteOrigin(prOrigin, currentHostname);
+  const body = cleanText(input.draft, SUITE_LIMITS.handoffText);
+  if (!origin || !body.text) return undefined;
+  const params = new URLSearchParams({ draft: body.text, from: "reader" });
+  if (input.title) {
+    const cleanTitle = cleanText(input.title.replace(/[\r\n\t]/g, " "), SUITE_LIMITS.handoffTitle);
+    if (cleanTitle.text) params.set("title", cleanTitle.text);
+  }
+  if (input.back && allowedSuiteRoute("reader", input.back, SUITE_LIMITS.back)) {
+    params.set("back", input.back);
+  }
+  return `${origin}/#/discover?${params.toString()}`;
 }

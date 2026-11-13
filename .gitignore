@@ -1,5 +1,15 @@
 node_modules/
 dist/
 data/
+cache/
+captures/
+*.db
+*.db-*
+*.sqlite
+*.sqlite*
 .env
+.env.*
+!.env.example
 *.log
+.DS_Store
+__pycache__/

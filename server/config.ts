@@ -127,11 +127,11 @@ export function parseSuiteFetch(
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
-  const port = Number(env.PORT || 21104);
+  const port = Number(env.BELL_READER_PORT || env.PORT || 4630);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT 必須是 1–65535 的整數。");
   }
-  const host = (env.HOST || "127.0.0.1").trim();
+  const host = (env.BELL_READER_HOST || env.HOST || "127.0.0.1").trim();
   const dataDir = (env.BELL_READER_DATA_DIR || "./data").trim();
   const allowedOrigins = parseAllowedOrigins(env.BELL_READER_ALLOWED_ORIGINS);
   const suiteLinks = parseSuiteLinks(env.BELL_READER_SUITE_LINKS, allowedOrigins);

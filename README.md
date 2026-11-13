@@ -1,24 +1,76 @@
 # BELL Web Reader
 
-BELL Suite 第四款工具：網頁與內容閱讀、手繪塗鴉疊加標註、資料夾／主題自動歸納，以及與 **BELL Explain** 的雙向知識連通。
+**English** · [繁體中文](./README.zh-TW.md)
 
-## 核心設計
+Local-first web article snapshot and organic ink annotation reader. Capture public HTTPS articles (with DNS-pinned SSRF protection) or paste Markdown/prose into a clean offline SQLite library, then annotate directly on the page with hand-drawn SVG highlights, underlines, boxes, brackets, margin notes, and sketches.
 
-1. **乾淨閱讀快照 ＋ 動態錨點 SVG 塗鴉層**：
-   - 後端以 SSRF 防護（DNS 釘定公開 IP、禁止內網與重新導向濫用）擷取公開 HTTPS 網頁正文、程式碼與附圖，或直接解析貼上的文章／Markdown，離線保存於本機 SQLite（`data/bell-reader.sqlite`）。
-   - 前端不破壞內容排版，以 `Range.getClientRects()` 綁定精確文字範圍，即時疊加有機手繪 SVG 圖層（螢光筆 `highlight`、波浪線 `underline`、圈選框 `box`、段落括號 `bracket`）與跨欄手繪曲線箭頭，連至右側手寫風格頁邊批註卡（視窗縮放自動重算，360px 窄螢幕自動轉為段落下方眉批卡）。
-2. **保存即快取，不重複燒 Token**：
-   - 已讀取的網址再次輸入時直接載入本機快照與既有標註；重新開啟頁面 0 AI 呼叫。
-   - 支援整頁一鍵「AI 塗鴉標註」，也支援選取單句「AI 說明」或 0 Token「手寫批註」。
-3. **資料夾歸納 ＋ 自動主題判斷 ＋ BELL Explain 連通**：
-   - AI 標註時自動判斷頁面 `topic` 與 `tags`，並可自動歸入對應主題資料夾。
-   - 透過本機 loopback 唯讀比對 BELL Explain 筆記主題，在頁面頂端與「主題歸納」頁直接顯示相關 Explain 筆記晶片，並支援將整頁或單則批註以 Suite 交接格式（`#/explain?text=…&from=reader&back=#/page/{id}`）送到 Explain 深入學習。
+Runs out-of-the-box as an **independent Standalone App** (zero environment variables required) or as part of **[BELL Suite](https://github.com/Suzu1Dev/bell-suite)** alongside Personal, Explain, BELL PR, and Campaign.
 
-## 啟動與測試
+## Quick Start
+
+### Install in One Line (macOS / Linux / WSL)
 
 ```bash
-npm run typecheck
-npm test
-npm run build
-npm start
+curl -fsSL https://raw.githubusercontent.com/Suzu1Dev/bell-reader/main/install.sh | sh
+bell-reader
 ```
+
+The installer checks npm first and automatically falls back to cloning from GitHub (`~/.local/share/bell-reader/app`) and symlinking `~/.local/bin/bell-reader`, bootstrapping Node.js 24 if needed.
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/Suzu1Dev/bell-reader/main/install.ps1 | iex
+bell-reader
+```
+
+### Run via `npx` or From Source
+
+```bash
+# Run directly with npx
+npx bell-reader
+
+# Or clone and run from source
+git clone https://github.com/Suzu1Dev/bell-reader.git
+cd bell-reader
+npm install && npm run build
+./bin/bell-reader.mjs start
+```
+
+## CLI Usage
+
+```text
+bell-reader [start] [--port <n>] [--host <h>] [--no-open] [--suite]
+bell-reader doctor [--json]
+bell-reader --version | --help
+```
+
+- **Standalone Edition (default)**: listens on `http://127.0.0.1:4630` with local SQLite storage in `./data/` (checkout) or `~/.bell-reader/data/` (global install).
+- **BELL Suite Edition (`--suite` or `bell-suite start`)**: listens on `http://127.0.0.1:4604`, matches reading topics against local BELL Explain notes, accepts `#/read?text=...` handoffs, and sends pages/annotations to BELL Explain (`#/explain`), BELL Personal (`#/tasks`), or BELL PR (`#/discover`).
+
+## Architecture Overview
+
+```text
+bin/bell-reader.mjs    Standalone & Suite CLI (start, doctor, --version, --help)
+src/                   React 19 editorial reader, Range-anchored RoughJS/freehand ink stage,
+                       margin cards, bilingual translation view, and Suite switcher
+shared/                TypeScript page/annotation schemas and Suite Contract v1 routes
+server/                Express 5 API, SSRF-hardened HTML extractor, SQLite store (node:sqlite),
+                       optional AI doodle/selection/translation runners, Explain topic bridge
+Formula/               Homebrew formula template
+```
+
+## Development & Verification
+
+Requires **Node.js 22.13+** (Node.js 24 LTS recommended) for built-in `node:sqlite`.
+
+```bash
+npm install
+npm run dev        # Vite frontend + API watch
+npm test           # Unit & integration test suite
+npm run build      # TypeScript check + production Vite bundle
+```
+
+## License
+
+[MIT](./LICENSE)

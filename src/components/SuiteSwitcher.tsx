@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, AudioLines, Check, GitPullRequest, Highlighter, Search, Sun } from "lucide-react";
+import { ArrowUpRight, AudioLines, CalendarRange, Check, GitPullRequest, Highlighter, Search, Sun } from "lucide-react";
 import { Command } from "cmdk";
 import type { SuiteAppId, SuiteLinks } from "../../shared/suite";
 
@@ -14,6 +14,7 @@ const APPS: Array<{
   { id: "explain", name: "BELL Explain", summary: "深入概念拆解與間隔複習", icon: AudioLines, shortcut: 2 },
   { id: "pr", name: "BELL PR", summary: "開源貢獻與程式碼審查", icon: GitPullRequest, shortcut: 3 },
   { id: "reader", name: "BELL Web Reader", summary: "網頁擷取與紙上手寫塗鴉筆記", icon: Highlighter, shortcut: 4 },
+  { id: "campaign", name: "BELL Campaign", summary: "活動專案倒數時程與團隊協作", icon: CalendarRange, shortcut: 5 },
 ];
 
 export default function SuiteSwitcher({
@@ -42,7 +43,7 @@ export default function SuiteSwitcher({
         onOpenChange(!open);
         return;
       }
-      if (["1", "2", "3", "4"].includes(event.key)) {
+      if (["1", "2", "3", "4", "5"].includes(event.key)) {
         event.preventDefault();
         const idx = Number(event.key) - 1;
         const target = APPS[idx];
@@ -139,7 +140,7 @@ export default function SuiteSwitcher({
       <div className="p-command-footer" aria-hidden="true">
         <span>↑↓ 選擇</span>
         <span>Enter 開啟</span>
-        <span>⌃1–4 快速切換</span>
+        <span>⌃1–5 快速切換</span>
       </div>
     </Command.Dialog>
   );

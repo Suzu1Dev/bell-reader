@@ -2168,25 +2168,22 @@ mark.ink-text-hit.is-active {
   color: var(--text-3);
 }
 
-.p-command-search input {
+.p-command-search input,
+.p-command-search input:focus,
+.p-command-search input:focus-visible {
   flex: 1;
   min-width: 0;
-  border: none;
-  background: transparent;
+  border: 0 !important;
+  background: transparent !important;
   font-size: 13.5px;
   color: var(--text);
+  caret-color: var(--reader-text);
   outline: none !important;
   box-shadow: none !important;
 }
 
 .p-command-search input::placeholder {
   color: var(--text-3);
-}
-
-.p-command-search input:focus,
-.p-command-search input:focus-visible {
-  outline: none !important;
-  box-shadow: none !important;
 }
 
 .p-kbd {
@@ -2260,6 +2257,7 @@ mark.ink-text-hit.is-active {
 .p-app-explain { background: var(--explain-tint); color: var(--explain-text); }
 .p-app-pr { background: var(--pr-tint); color: var(--pr-text); }
 .p-app-reader { background: var(--reader-tint); color: var(--reader-text); }
+.p-app-campaign { background: var(--campaign-tint); color: var(--campaign-text); }
 
 .p-command-app-meta {
   display: flex;
@@ -2534,4 +2532,42 @@ mark.ink-text-hit.is-active {
   .density-popover {
     width: min(304px, calc(100vw - 20px));
   }
+}
+
+/* ── Dark Studio Material Polish ─────────────────────────────────────────── */
+[data-theme="dark"] .app-sidebar {
+  background: linear-gradient(180deg, #12110F 0%, #0F0E0C 100%);
+  border-right-color: rgba(244, 234, 216, 0.08);
+}
+
+[data-theme="dark"] .main-topbar {
+  background: rgba(23, 21, 18, 0.88);
+  backdrop-filter: blur(10px);
+  border-bottom-color: rgba(244, 234, 216, 0.08);
+}
+
+[data-theme="dark"] .reader-ai-summary {
+  background: rgba(244, 234, 216, 0.03);
+  border-left-color: rgba(124, 192, 255, 0.45);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+[data-theme="dark"] .hand-sketch {
+  background: color-mix(in srgb, #211E1A 90%, currentColor 5%);
+  border-color: color-mix(in srgb, currentColor 28%, rgba(244, 234, 216, 0.12));
+}
+
+[data-theme="dark"] .hand-sketch-fill {
+  opacity: 0.34;
+}
+
+[data-theme="dark"] .reader-figure img {
+  filter: brightness(0.89) contrast(0.98) saturate(0.95);
+  border-color: rgba(244, 234, 216, 0.14);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+}
+
+[data-theme="dark"] .reader-code {
+  background: #13110F;
+  border-color: rgba(244, 234, 216, 0.09);
 }

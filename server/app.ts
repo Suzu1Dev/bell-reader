@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import compression from "compression";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   AI_PROVIDERS,
@@ -213,7 +214,7 @@ export function createApp(options: CreateAppOptions) {
     suiteFetch = {},
     aiRunner,
     htmlFetcher = fetchPublicHtml,
-    distDir = resolve(process.cwd(), "dist"),
+    distDir = fileURLToPath(new URL("../dist", import.meta.url)),
   } = options;
 
   const explainBridge = new ExplainBridge(suiteFetch.explain, suiteLinks.explain);
@@ -229,6 +230,10 @@ export function createApp(options: CreateAppOptions) {
   });
 
   // ── Suite Contract Endpoints ─────────────────────────────────────────────
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", appId: "reader" });
+  });
+
   app.get("/api/suite/manifest", (_req, res) => {
     const manifest: SuiteManifest = {
       schemaVersion: 1,

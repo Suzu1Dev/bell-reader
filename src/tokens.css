@@ -13,12 +13,24 @@
   font-weight: 100 900;
   font-display: swap;
 }
+@font-face {
+  font-family: "NaikaiFont";
+  src: url("/fonts/naikai-tc.woff2") format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Iansui";
+  src: url("/fonts/iansui-tc.ttf") format("truetype");
+  font-weight: 400 700;
+  font-display: swap;
+}
 
 :root {
   --font-sans: "Geist", "PingFang TC", "Noto Sans TC", "Noto Sans CJK TC", "Microsoft JhengHei", system-ui, sans-serif;
   --font-serif: "Newsreader Variable", "Iowan Old Style", "Noto Serif TC", "Noto Serif CJK TC", "Songti TC", Georgia, serif;
   --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", monospace;
-  --font-pen: "Caveat", "HanziPen TC", "BiauKaiTC", "Kaiti TC", "STKaiti", "PingFang TC", "Noto Sans TC", cursive, sans-serif;
+  --font-pen: "Caveat", "NaikaiFont", "Iansui", "HanziPen TC", "BiauKaiTC", "Kaiti TC", "STKaiti", cursive, sans-serif;
 
   --text-micro: 11px;    --lh-micro: 16px;
   --text-meta: 12.5px;   --lh-meta: 18px;
@@ -104,6 +116,8 @@
   --reader-text: #1D4ED8;
   --reader-on: #FFFFFF;
   --reader-tint: rgba(24, 24, 27, .06);
+  --campaign-text: #89214D;
+  --campaign-tint: #F9ECF1;
 
   --paper-sheet: #FFFFFF;
   --paper-sheet-border: rgba(24, 24, 27, .08);
@@ -145,71 +159,73 @@
   --ink-sky-border: rgba(19, 83, 163, 0.28);
 }
 
-/* ── Dark Mode (Matte Obsidian Ink) ──────────────────────────────────────── */
+/* ── Dark Mode (Warm Archival Obsidian Studio) ───────────────────────────── */
 [data-theme="dark"] {
   color-scheme: dark;
-  --chrome: var(--ink-950);
-  --panel: var(--ink-900);
-  --raised: var(--ink-800);
-  --raised-2: var(--ink-750);
-  --overlay: rgba(27, 29, 34, .97);
+  --chrome: #11100E;
+  --panel: #171512;
+  --raised: #221F1B;
+  --raised-2: #2C2722;
+  --overlay: rgba(31, 28, 24, .97);
 
-  --text: #ECEBE6;
-  --text-2: #B9B8B2;
-  --text-3: #8A8982;
-  --text-4: #5C5B55;
+  --text: #EFE8DC;
+  --text-2: #C5BCB0;
+  --text-3: #90887C;
+  --text-4: #5F584F;
 
-  --line: rgba(255, 255, 255, .09);
-  --line-2: rgba(255, 255, 255, .15);
-  --fill-hover: rgba(255, 255, 255, .045);
-  --fill-active: rgba(255, 255, 255, .08);
-  --scrim: rgba(4, 5, 7, .65);
+  --line: rgba(244, 234, 216, .085);
+  --line-2: rgba(244, 234, 216, .165);
+  --fill-hover: rgba(248, 238, 222, .055);
+  --fill-active: rgba(248, 238, 222, .105);
+  --scrim: rgba(7, 6, 5, .70);
 
-  --shadow-panel: 0 1px 3px rgba(0, 0, 0, .4);
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, .4);
-  --shadow-pop: 0 16px 40px -8px rgba(0, 0, 0, .75), 0 0 0 1px rgba(255, 255, 255, .10);
+  --shadow-panel: 0 1px 4px rgba(0, 0, 0, .42);
+  --shadow-card: 0 2px 6px rgba(0, 0, 0, .38);
+  --shadow-pop: 0 18px 44px -8px rgba(0, 0, 0, .78), 0 0 0 1px rgba(244, 234, 216, .11);
 
-  --personal-text: var(--terracotta-300);
-  --personal-tint: rgba(224, 138, 92, .14);
-  --pr-text: var(--forest-300);
-  --pr-tint: rgba(61, 214, 140, .12);
-  --explain: #6A56EB;
-  --explain-text: var(--violet-300);
-  --explain-tint: rgba(139, 124, 246, .14);
+  --personal-text: #EE9B6D;
+  --personal-tint: rgba(238, 155, 109, .14);
+  --pr-text: #59DBA0;
+  --pr-tint: rgba(89, 219, 160, .13);
+  --explain: #7A67F0;
+  --explain-text: #B8AEFF;
+  --explain-tint: rgba(154, 140, 252, .15);
 
-  --reader: var(--sky-400);
-  --reader-text: var(--sky-300);
-  --reader-on: var(--ink-950);
-  --reader-tint: rgba(56, 174, 248, .13);
+  --reader: #7CC0FF;
+  --reader-text: #90CAFF;
+  --reader-on: #11100E;
+  --reader-tint: rgba(124, 192, 255, .14);
+  --campaign-text: #F28BB4;
+  --campaign-tint: #2C1923;
 
-  --paper-sheet: #16181D;
-  --paper-sheet-border: rgba(255, 255, 255, .09);
-  --paper-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  --paper-sheet: #191714;
+  --paper-sheet-border: rgba(244, 234, 216, .085);
+  --paper-shadow: 0 2px 10px rgba(0, 0, 0, .34);
   --highlighter-blend: normal;
 
   --danger: var(--red-400);
-  --focus: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--sky-300);
+  --focus: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--reader);
 
-  /* Ballpoint Pen Ink + Lower-Half Highlighter Washes (Dark Paper) */
-  --ink-amber-wash: rgba(245, 177, 61, 0.28);
-  --ink-amber-stroke: #F4BE58;
-  --ink-amber-border: rgba(244, 190, 88, 0.30);
+  /* Calibrated Luminous Ink & Warm Highlighter Washes (Dark Studio Paper) */
+  --ink-amber-wash: rgba(238, 180, 70, 0.24);
+  --ink-amber-stroke: #F3C468;
+  --ink-amber-border: rgba(243, 196, 104, 0.34);
 
-  --ink-mint-wash: rgba(61, 214, 140, 0.25);
-  --ink-mint-stroke: #56DF9D;
-  --ink-mint-border: rgba(86, 223, 157, 0.30);
+  --ink-mint-wash: rgba(88, 212, 154, 0.21);
+  --ink-mint-stroke: #6CE0A8;
+  --ink-mint-border: rgba(108, 224, 168, 0.32);
 
-  --ink-violet-wash: rgba(167, 153, 255, 0.26);
-  --ink-violet-stroke: #B7ACFF;
-  --ink-violet-border: rgba(183, 172, 255, 0.30);
+  --ink-violet-wash: rgba(173, 158, 255, 0.23);
+  --ink-violet-stroke: #C2B5FF;
+  --ink-violet-border: rgba(194, 181, 255, 0.32);
 
-  --ink-coral-wash: rgba(255, 120, 115, 0.25);
-  --ink-coral-stroke: #FF8C87;
-  --ink-coral-border: rgba(255, 140, 135, 0.30);
+  --ink-coral-wash: rgba(248, 128, 120, 0.22);
+  --ink-coral-stroke: #FF9992;
+  --ink-coral-border: rgba(255, 153, 146, 0.32);
 
-  --ink-sky-wash: rgba(86, 190, 255, 0.26);
-  --ink-sky-stroke: #75CBFF;
-  --ink-sky-border: rgba(117, 203, 255, 0.30);
+  --ink-sky-wash: rgba(102, 188, 255, 0.22);
+  --ink-sky-stroke: #87CAFF;
+  --ink-sky-border: rgba(135, 202, 255, 0.32);
 }
 
 @media (prefers-reduced-motion: reduce) {

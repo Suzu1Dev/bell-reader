@@ -12,6 +12,7 @@ import {
   FileText,
   Folder as FolderIcon,
   FolderPlus,
+  GitPullRequest,
   Globe,
   Highlighter,
   Languages,
@@ -44,6 +45,7 @@ import {
   isReaderHandoffAttempt,
   parseReaderHandoff,
   personalTaskHref,
+  prDraftHref,
   safeSuiteOrigin,
   type ReaderHandoffDraft,
   type SuiteAppId,
@@ -61,6 +63,7 @@ const APP_NAMES: Record<SuiteAppId, string> = {
   explain: "BELL Explain",
   pr: "BELL PR",
   reader: "BELL Web Reader",
+  campaign: "BELL Campaign",
 };
 
 const SAMPLE_ARTICLE = `# 瀏覽器 Event Loop 與畫面重繪時機
@@ -348,7 +351,7 @@ export default function App() {
       const manifest = await apiGet<SuiteManifest>("/api/suite/manifest");
       const host = window.location.hostname;
       const sanitized: SuiteLinks = {};
-      for (const app of ["personal", "explain", "pr"] as const) {
+      for (const app of ["personal", "explain", "pr", "campaign"] as const) {
         const safe = safeSuiteOrigin(manifest.links?.[app], host);
         if (safe) sanitized[app] = safe;
       }
@@ -624,6 +627,7 @@ export default function App() {
 
   const explainOrigin = explainStatus.browserOrigin || suiteLinks.explain;
   const personalOrigin = suiteLinks.personal;
+  const prOrigin = suiteLinks.pr;
 
   const pageToExplainHref = useMemo(() => {
     if (!activePage) return undefined;
@@ -657,6 +661,19 @@ export default function App() {
       window.location.hostname,
     );
   }, [activePage, personalOrigin]);
+
+  const pageToPrHref = useMemo(() => {
+    if (!activePage) return undefined;
+    return prDraftHref(
+      prOrigin,
+      {
+        title: activePage.title,
+        draft: `${activePage.title}${activePage.url ? `\n${activePage.url}` : ""}${activePage.summary ? `\n\n${activePage.summary}` : ""}`,
+        back: `#/page/${activePage.id}`,
+      },
+      window.location.hostname,
+    );
+  }, [activePage, prOrigin]);
 
   const renderPageCard = (p: SavedPageSummary) => {
     const folder = folders.find((f) => f.id === p.folderId);
@@ -1068,6 +1085,17 @@ export default function App() {
                           >
                             <CheckSquare size={13} aria-hidden="true" />
                             <span>轉成 BELL Personal 待辦</span>
+                          </a>
+                        ) : null}
+                        {pageToPrHref ? (
+                          <a
+                            href={pageToPrHref}
+                            className="more-menu-item"
+                            role="menuitem"
+                            onClick={() => setMoreMenuOpen(false)}
+                          >
+                            <GitPullRequest size={13} aria-hidden="true" />
+                            <span>送到 BELL PR</span>
                           </a>
                         ) : null}
                         {activePage.translatedBlocks ? (
