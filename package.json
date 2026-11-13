@@ -24,6 +24,7 @@
   "scripts": {
     "dev": "concurrently -k -n api,web \"tsx watch --env-file-if-exists=.env server/index.ts\" \"vite --host 127.0.0.1\"",
     "build": "tsc --noEmit && vite build",
+    "prepare": "node -e \"import('node:fs').then(fs=>{if(fs.existsSync('node_modules/vite')&&!fs.existsSync('dist/index.html'))import('node:child_process').then(cp=>cp.execSync('npm run build',{stdio:'inherit'}))})\"",
     "prepack": "npm run build",
     "start": "tsx --env-file-if-exists=.env server/index.ts",
     "test": "BELL_LOG=off tsx --test --test-timeout=60000 server/*.test.ts src/lib/*.test.ts",
@@ -66,5 +67,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
