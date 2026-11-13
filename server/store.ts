@@ -4,7 +4,9 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   AI_PROVIDERS,
+  ANNOTATION_DENSITIES,
   INK_COLORS,
+  type AnnotationDensity,
   type Folder,
   type InkColor,
   type InkStyle,
@@ -20,6 +22,7 @@ const DEFAULT_SETTINGS: ProviderSettings = {
   provider: "codex",
   model: "",
   autoFolder: true,
+  annotationDensity: "balanced",
 };
 
 interface PageRow {
@@ -48,6 +51,7 @@ interface AnnotationRow {
   page_id: string;
   block_id: string;
   quote: string;
+  translated_quote: string | null;
   start_offset: number;
   end_offset: number;
   style: InkStyle;
@@ -129,6 +133,7 @@ export class ReaderStore {
     const colNames = new Set(cols.map((c) => c.name));
     if (!colNames.has("anchor_x")) this.db.exec("ALTER TABLE annotations ADD COLUMN anchor_x REAL");
     if (!colNames.has("anchor_y")) this.db.exec("ALTER TABLE annotations ADD COLUMN anchor_y REAL");
+    if (!colNames.has("translated_quote")) this.db.exec("ALTER TABLE annotations ADD COLUMN translated_quote TEXT");
 
     const pageCols = this.db.prepare("PRAGMA table_info(pages)").all() as Array<{ name: string }>;
     const pageColNames = new Set(pageCols.map((c) => c.name));
@@ -155,6 +160,11 @@ export class ReaderStore {
             : "codex",
         model: typeof parsed.model === "string" ? parsed.model.slice(0, 160) : "",
         autoFolder: typeof parsed.autoFolder === "boolean" ? parsed.autoFolder : true,
+        annotationDensity:
+          typeof parsed.annotationDensity === "string" &&
+          (ANNOTATION_DENSITIES as readonly string[]).includes(parsed.annotationDensity)
+            ? (parsed.annotationDensity as AnnotationDensity)
+            : "balanced",
       };
     } catch {
       return { ...DEFAULT_SETTINGS };
@@ -167,6 +177,7 @@ export class ReaderStore {
       ...(patch.provider ? { provider: patch.provider } : {}),
       ...(patch.model !== undefined ? { model: patch.model.trim().slice(0, 160) } : {}),
       ...(patch.autoFolder !== undefined ? { autoFolder: patch.autoFolder } : {}),
+      ...(patch.annotationDensity ? { annotationDensity: patch.annotationDensity } : {}),
     };
     this.db
       .prepare(
@@ -268,6 +279,7 @@ export class ReaderStore {
       pageId: row.page_id,
       blockId: row.block_id,
       quote: row.quote,
+      ...(row.translated_quote ? { translatedQuote: row.translated_quote } : {}),
       startOffset: row.start_offset,
       endOffset: row.end_offset,
       style: row.style,
@@ -404,23 +416,41 @@ export class ReaderStore {
     return this.getPage(id)!;
   }
 
-  saveTranslation(pageId: string, result: { title: string; blocks: ReaderBlock[] }): SavedPage {
+  saveTranslation(
+    pageId: string,
+    result: { title: string; blocks: ReaderBlock[]; annotationQuotes?: Record<string, string> },
+  ): SavedPage {
     const current = this.getPage(pageId);
     if (!current) throw new AppError(404, "找不到此頁面。");
     const now = new Date().toISOString();
-    this.db
-      .prepare(`
-        UPDATE pages
-        SET translated_title = ?, translated_blocks_json = ?, translated_at = ?, updated_at = ?
-        WHERE id = ?
-      `)
-      .run(
-        result.title.trim().slice(0, 160) || current.title,
-        JSON.stringify(result.blocks),
-        now,
-        now,
-        pageId,
-      );
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(`
+          UPDATE pages
+          SET translated_title = ?, translated_blocks_json = ?, translated_at = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(
+          result.title.trim().slice(0, 160) || current.title,
+          JSON.stringify(result.blocks),
+          now,
+          now,
+          pageId,
+        );
+      if (result.annotationQuotes) {
+        const updateQuote = this.db.prepare(
+          "UPDATE annotations SET translated_quote = ? WHERE id = ? AND page_id = ?",
+        );
+        for (const [annId, tQuote] of Object.entries(result.annotationQuotes)) {
+          if (tQuote.trim()) updateQuote.run(tQuote, annId, pageId);
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
     return this.getPage(pageId)!;
   }
 
@@ -447,8 +477,8 @@ export class ReaderStore {
       this.db.prepare("DELETE FROM annotations WHERE page_id = ? AND source = 'ai'").run(pageId);
       const insert = this.db.prepare(`
         INSERT INTO annotations (
-          id, page_id, block_id, quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?)
+          id, page_id, block_id, quote, translated_quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?)
       `);
       for (const item of result.annotations) {
         insert.run(
@@ -456,6 +486,7 @@ export class ReaderStore {
           pageId,
           item.blockId,
           item.quote,
+          item.translatedQuote ?? null,
           item.startOffset,
           item.endOffset,
           item.style,
@@ -502,14 +533,15 @@ export class ReaderStore {
     this.db
       .prepare(`
         INSERT INTO annotations (
-          id, page_id, block_id, quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, page_id, block_id, quote, translated_quote, start_offset, end_offset, style, color, label, note, topic, anchor_x, anchor_y, source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         id,
         pageId,
         item.blockId,
         item.quote,
+        item.translatedQuote ?? null,
         item.startOffset,
         item.endOffset,
         item.style,

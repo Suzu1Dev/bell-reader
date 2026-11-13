@@ -147,6 +147,7 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
 
   const store = new ReaderStore(":memory:");
   let fetchCalls = 0;
+  let lastDensity: string | undefined;
   const app = createApp({
     store,
     suiteLinks: {
@@ -164,15 +165,21 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
         contentType: "text/html",
       };
     },
-    aiRunner: async (input, _settings, signal) => {
+    aiRunner: async (input, runnerSettings, signal) => {
       await new Promise((resolve) => setTimeout(resolve, 25));
       assert.equal(signal?.aborted, false, "request body completion must not abort AI runner");
+      lastDensity = runnerSettings.annotationDensity;
       if (input.includes('"translations"')) {
+        const marker = "輸入資料：\n";
+        const idx = input.indexOf(marker);
+        const payload = idx >= 0 ? JSON.parse(input.slice(idx + marker.length)) : {};
+        const firstAnn = payload.annotations?.[0] as { id: string } | undefined;
         return {
           title: "RISC-V 指令集模擬器實戰",
           translations: [
             { id: "b1", text: "記憶體子系統（Memory Subsystem）負責載入 ELF 映像檔。" },
           ],
+          ...(firstAnn ? { quotes: [{ id: firstAnn.id, quote: "記憶體子系統（Memory Subsystem）" }] } : {}),
         };
       }
       return {
@@ -455,6 +462,19 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
     });
     assert.equal(enPageRes.status, 201);
     const enPageBody = (await enPageRes.json()) as { page: { id: string } };
+    const preTrAnnRes = await fetch(`${srv.url}/api/pages/${enPageBody.page.id}/annotations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        blockId: "b1",
+        quote: "Memory subsystem",
+        style: "highlight",
+        color: "amber",
+        label: "核心概念",
+        note: "ELF 映像檔由此載入記憶體。",
+      }),
+    });
+    assert.equal(preTrAnnRes.status, 201);
     const trRes = await fetch(`${srv.url}/api/pages/${enPageBody.page.id}/translate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -465,13 +485,33 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
         translatedTitle?: string;
         translatedAt?: string;
         translatedBlocks?: Array<{ kind: string; text: string }>;
+        annotations: Array<{ translatedQuote?: string }>;
       };
     };
     assert.equal(trBody.page.translatedTitle, "RISC-V 指令集模擬器實戰");
     assert.ok(trBody.page.translatedAt);
     assert.ok(trBody.page.translatedBlocks?.[0].text.includes("記憶體子系統"));
+    assert.equal(trBody.page.annotations[0]?.translatedQuote, "記憶體子系統（Memory Subsystem）");
     const translatedCode = trBody.page.translatedBlocks?.find((b) => b.kind === "code");
     assert.equal(translatedCode?.text, codeText);
+
+    // 11. Annotation density persists in settings and flows through POST /annotate
+    const densityPatch = await fetch(`${srv.url}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ annotationDensity: "thorough" }),
+    });
+    assert.equal(densityPatch.status, 200);
+    const densityBody = (await densityPatch.json()) as { annotationDensity?: string };
+    assert.equal(densityBody.annotationDensity, "thorough");
+
+    const sparseAnnRes = await fetch(`${srv.url}/api/pages/${body1.page.id}/annotate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ density: "sparse" }),
+    });
+    assert.equal(sparseAnnRes.status, 200);
+    assert.equal(lastDensity, "sparse");
   } finally {
     await srv.close();
     store.close();

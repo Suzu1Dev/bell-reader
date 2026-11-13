@@ -1,3 +1,5 @@
+import type { AnnotationDensity } from "../../shared/types";
+
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
   const body = await res.json().catch(() => ({}));
@@ -33,6 +35,7 @@ export async function apiAnnotateStream<T>(
   pageId: string,
   onStage: (message: string) => void,
   signal?: AbortSignal,
+  density?: AnnotationDensity,
 ): Promise<T> {
   const res = await fetch(`/api/pages/${encodeURIComponent(pageId)}/annotate`, {
     method: "POST",
@@ -41,7 +44,7 @@ export async function apiAnnotateStream<T>(
       "content-type": "application/json",
       accept: "application/x-ndjson",
     },
-    body: "{}",
+    body: JSON.stringify(density ? { density } : {}),
   });
 
   if (!res.ok || !res.body) {

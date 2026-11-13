@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   INK_COLORS,
   INK_STYLES,
+  type AnnotationDensity,
   type Folder,
   type InkColor,
   type InkStyle,
@@ -36,12 +37,53 @@ const pageAnnotationOutputSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(24)).min(1).max(4),
   summary: z.string().trim().min(1).max(200),
   suggestedFolder: z.string().trim().min(1).max(32),
-  annotations: z.array(annotationItemSchema).min(1).max(10),
+  annotations: z.array(annotationItemSchema).min(1).max(14),
 });
 
 const sectionAnnotationOutputSchema = z.object({
-  annotations: z.array(annotationItemSchema).min(1).max(8),
+  annotations: z.array(annotationItemSchema).min(1).max(10),
 });
+
+const DENSITY_PROFILES: Record<
+  AnnotationDensity,
+  {
+    maxChunkBlocks: number;
+    maxChunkChars: number;
+    singleHint: string;
+    leadHint: string;
+    sectionHint: string;
+    maxImages: number;
+    guidance: string;
+  }
+> = {
+  sparse: {
+    maxChunkBlocks: 54,
+    maxChunkChars: 13500,
+    singleHint: "2 到 3 處",
+    leadHint: "1 到 2 處",
+    sectionHint: "1 到 2 處",
+    maxImages: 3,
+    guidance: "只挑最不可或缺的核心結論與關鍵圖表，保持閱讀版面清爽留白。",
+  },
+  balanced: {
+    maxChunkBlocks: 38,
+    maxChunkChars: 9500,
+    singleHint: "4 到 8 處",
+    leadHint: "3 到 5 處",
+    sectionHint: "2 到 4 處",
+    maxImages: 6,
+    guidance: "兼顧核心論點、重要概念、實務技巧與關鍵圖表，維持適中閱讀節奏。",
+  },
+  thorough: {
+    maxChunkBlocks: 24,
+    maxChunkChars: 6000,
+    singleHint: "7 到 11 處",
+    leadHint: "5 到 8 處",
+    sectionHint: "4 到 7 處",
+    maxImages: 10,
+    guidance: "高密度深入導讀！積極標註重要推論、關鍵專有名詞圈選、程式碼／表格細節與常見陷阱。",
+  },
+};
 
 const translationOutputSchema = z.object({
   title: z.string().trim().min(1).max(240).optional(),
@@ -54,6 +96,14 @@ const translationOutputSchema = z.object({
       }),
     )
     .min(1),
+  quotes: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1),
+        quote: z.string().trim().min(1).max(240),
+      }),
+    )
+    .optional(),
 });
 
 const selectionOutputSchema = z.object({
@@ -574,8 +624,11 @@ export async function annotatePageWithAI(
   suggestedFolder: string;
   annotations: ResolvedAnnotation[];
 }> {
+  const density: AnnotationDensity = settings.annotationDensity ?? "balanced";
+  const profile = DENSITY_PROFILES[density];
+
   const imageCandidates = page.blocks.filter((b) => b.kind === "image" && Boolean(b.imageUrl));
-  const sampledIndices = pickSampleIndices(imageCandidates.length, 8);
+  const sampledIndices = pickSampleIndices(imageCandidates.length, profile.maxImages);
   const attachedByBlockId = new Map<string, AiImageInput>();
 
   await Promise.all(
@@ -605,7 +658,7 @@ export async function annotatePageWithAI(
   }
 
   // Long articles are chunked so middle and ending sections get thorough annotations too
-  const blockChunks = chunkBlocks(rawBlocks, 38, 9500);
+  const blockChunks = chunkBlocks(rawBlocks, profile.maxChunkBlocks, profile.maxChunkChars);
   const blockMap = new Map(page.blocks.map((b) => [b.id, b]));
   const orderMap = new Map(page.blocks.map((b, i) => [b.id, i]));
 
@@ -641,10 +694,10 @@ export async function annotatePageWithAI(
   });
 
   const lead = chunkPayloads[0];
-  const leadCountHint = chunkPayloads.length > 1 ? "3 到 5 處" : "4 到 8 處";
+  const leadCountHint = chunkPayloads.length > 1 ? profile.leadHint : profile.singleHint;
   const leadPrompt = `${UNTRUSTED_BOUNDARY}
 
-你是一位擅長「在文章與圖表頁邊做手寫塗鴉筆記」的資深導讀夥伴。請閱讀下方${chunkPayloads.length > 1 ? `長文章的第 1/${chunkPayloads.length} 區段與附加圖表` : "頁面段落與附加的圖表影像"}，挑選 ${leadCountHint}最值得畫重點、圈選關鍵概念、或針對圖片／圖表／指令執行截圖拉出箭頭補充說明的位置，產生「頁邊手寫風格批註」（不要寫對話開場白，直接寫像讀書筆記般的精準洞察、數據／圖形解讀、直覺比喻、背後原因或陷阱提醒，一律使用繁體中文 zh-TW）。
+你是一位擅長「在文章與圖表頁邊做手寫塗鴉筆記」的資深導讀夥伴。請閱讀下方${chunkPayloads.length > 1 ? `長文章的第 1/${chunkPayloads.length} 區段與附加圖表` : "頁面段落與附加的圖表影像"}，挑選 ${leadCountHint}值得畫重點、圈選關鍵概念、或針對圖片／圖表／指令執行截圖拉出箭頭補充說明的位置，產生「頁邊手寫風格批註」（${profile.guidance} 不要寫對話開場白，直接寫像讀書筆記般的精準洞察、數據／圖形解讀、直覺比喻、背後原因或陷阱提醒，一律使用繁體中文 zh-TW）。
 
 同時請判斷整篇文章的主題（topic）、1–4 個標籤（tags），以及適合歸入的資料夾名稱（suggestedFolder：若下方 existingFolders 有語意吻合者請優先沿用其名稱，否則給出簡短分類名如「系統架構」「資訊安全」「前端工程」）。
 
@@ -703,7 +756,7 @@ ${JSON.stringify({
     ...chunkPayloads.slice(1).map(async (sec) => {
       const secPrompt = `${UNTRUSTED_BOUNDARY}
 
-你是一位擅長「在文章與圖表頁邊做手寫塗鴉筆記」的資深導讀夥伴。這是長文章《${page.title}》的第 ${sec.chunkIdx + 1}/${chunkPayloads.length} 區段。請**只針對本區段傳入的 blocks** 挑選 2 到 4 處最值得畫重點、圈選關鍵概念、程式碼拆解或圖片補充說明的位置，產生「頁邊手寫風格批註」（繁體中文 zh-TW，精準直接、勿重複其他段已寫過的大意）。
+你是一位擅長「在文章與圖表頁邊做手寫塗鴉筆記」的資深導讀夥伴。這是長文章《${page.title}》的第 ${sec.chunkIdx + 1}/${chunkPayloads.length} 區段。請**只針對本區段傳入的 blocks** 挑選 ${profile.sectionHint}值得畫重點、圈選關鍵概念、程式碼拆解或圖片補充說明的位置，產生「頁邊手寫風格批註」（${profile.guidance} 繁體中文 zh-TW，精準直接、勿重複其他段已寫過的大意）。
 
 ${buildAnnotationRulesBlock(sec.chunkImages.length, sec.hasImages)}
 
@@ -865,7 +918,8 @@ export async function translatePageWithAI(
   settings: ProviderSettings,
   signal: AbortSignal,
   runner: JsonPromptRunner = defaultJsonRunner,
-): Promise<{ title: string; blocks: ReaderBlock[] }> {
+): Promise<{ title: string; blocks: ReaderBlock[]; annotationQuotes: Record<string, string> }> {
+  const blockMap = new Map(page.blocks.map((b) => [b.id, b]));
   const translatable = page.blocks
     .filter((b) => b.kind !== "code" && (b.text.trim().length > 0 || (b.kind === "image" && Boolean(b.alt?.trim()))))
     .map((b) => ({
@@ -876,15 +930,21 @@ export async function translatePageWithAI(
     }));
 
   if (!translatable.length) {
-    return { title: page.title, blocks: page.blocks.map((b) => ({ ...b })) };
+    return { title: page.title, blocks: page.blocks.map((b) => ({ ...b })), annotationQuotes: {} };
   }
 
   const chunks = chunkBlocks(translatable, 26, 6500);
   const translatedById = new Map<string, { text: string; alt?: string }>();
+  const rawQuotesById = new Map<string, string>();
   let translatedTitle = page.title;
 
   const results = await Promise.all(
     chunks.map(async (chunk, chunkIdx) => {
+      const chunkIds = new Set(chunk.map((c) => c.id));
+      const chunkAnns = page.annotations
+        .filter((a) => chunkIds.has(a.blockId) && blockMap.get(a.blockId)?.kind !== "image")
+        .map((a) => ({ id: a.id, blockId: a.blockId, quote: a.quote }));
+
       const prompt = `${UNTRUSTED_BOUNDARY}
 
 你是一位熟悉電腦科學、系統程式與工程技術文章的專業技術翻譯（台灣繁體中文 zh-TW）。請將下方技術文章段落翻譯成自然流暢的「台灣繁體中文」，嚴格遵守以下規則：
@@ -895,13 +955,13 @@ export async function translatePageWithAI(
    - 行內反引號包住的片段（例如 \`csr_read()\`）必須原字保留。
 3. **專有名詞與技術名詞處理**：
    - 業界通行英文縮寫或專有名詞可直接保留英文原文（如 RISC-V、ELF、CSR、MMIO、POSIX、GCC、LLVM、ABI、GDB），或在初次／重要處翻成台灣中文並緊接著以括號標出英文原文，例如「系統呼叫（system call）」「管線（pipeline）」「虛擬記憶體（virtual memory）」。
-4. **保持原文順序與完整性**：針對輸入陣列中的每一個 block，回傳對應的 \`id\` 與翻譯後的 \`text\`（若原 block 有 \`alt\`，一併回傳翻譯後的 \`alt\`），不可合併、拆分或漏掉任何項目。若 block 的 \`kind\` 為 \`"table"\`，請保持每列換行、每欄以 \` | \` 分隔的表格結構。${chunkIdx === 0 ? "\n5. 同時翻譯文章標題 \`title\`（專有名詞可保留英文或加括號原文）。" : ""}
+4. **保持原文順序與完整性**：針對輸入陣列中的每一個 block，回傳對應的 \`id\` 與翻譯後的 \`text\`（若原 block 有 \`alt\`，一併回傳翻譯後的 \`alt\`），不可合併、拆分或漏掉任何項目。若 block 的 \`kind\` 為 \`"table"\`，請保持每列換行、每欄以 \` | \` 分隔的表格結構。${chunkIdx === 0 ? "\n5. 同時翻譯文章標題 \`title\`（專有名詞可保留英文或加括號原文）。" : ""}${chunkAnns.length > 0 ? `\n6. 下方附帶 \`annotations\` 陣列，請一併回傳 \`quotes\` 陣列：針對每則標註的 \`id\`，從對應 \`blockId\` **翻譯後的 text 中一字不差節錄**最相應的連續子字串（2–90 字），讓譯文能同步呈現螢光筆／底線／圈選標記。` : ""}
 
 請只回傳純 JSON 物件：
 {${chunkIdx === 0 ? '\n  "title": "翻譯後標題（含適當英文專有名詞）",' : ""}
   "translations": [
     { "id": "${chunk[0].id}", "text": "翻譯後文字"${chunk[0].alt ? ', "alt": "圖說翻譯"' : ""} }
-  ]
+  ]${chunkAnns.length > 0 ? `,\n  "quotes": [\n    { "id": "${chunkAnns[0].id}", "quote": "譯文中完全一致的對應連續片段" }\n  ]` : ""}
 }
 
 輸入資料：
@@ -909,6 +969,7 @@ ${JSON.stringify({
   ...(chunkIdx === 0 ? { title: page.title } : { pageTitle: page.title }),
   section: `${chunkIdx + 1}/${chunks.length}`,
   blocks: chunk,
+  ...(chunkAnns.length > 0 ? { annotations: chunkAnns } : {}),
 })}`;
 
       const raw = await runner(prompt, settings, signal);
@@ -926,6 +987,9 @@ ${JSON.stringify({
     }
     for (const item of res.data.translations) {
       translatedById.set(item.id, { text: item.text, alt: item.alt });
+    }
+    for (const q of res.data.quotes ?? []) {
+      rawQuotesById.set(q.id, q.quote);
     }
   }
 
@@ -966,5 +1030,17 @@ ${JSON.stringify({
     };
   });
 
-  return { title: translatedTitle, blocks };
+  const translatedBlockMap = new Map(blocks.map((b) => [b.id, b]));
+  const annotationQuotes: Record<string, string> = {};
+  for (const ann of page.annotations) {
+    const candidate = rawQuotesById.get(ann.id);
+    const target = translatedBlockMap.get(ann.blockId);
+    if (!candidate || !target) continue;
+    const matched = resolveQuoteAnchor(target.text, candidate);
+    if (matched) {
+      annotationQuotes[ann.id] = matched.exactQuote;
+    }
+  }
+
+  return { title: translatedTitle, blocks, annotationQuotes };
 }

@@ -22,6 +22,7 @@ export interface PageAnnotation {
   pageId: string;
   blockId: string;
   quote: string;
+  translatedQuote?: string;
   startOffset: number;
   endOffset: number;
   style: InkStyle;
@@ -86,8 +87,12 @@ export interface ExplainBridgeStatus {
 export const AI_PROVIDERS = ["codex", "claude", "antigravity", "api"] as const;
 export type AIProviderKind = (typeof AI_PROVIDERS)[number];
 
+export const ANNOTATION_DENSITIES = ["sparse", "balanced", "thorough"] as const;
+export type AnnotationDensity = (typeof ANNOTATION_DENSITIES)[number];
+
 export interface ProviderSettings {
   provider: AIProviderKind;
   model: string;
   autoFolder: boolean;
+  annotationDensity?: AnnotationDensity;
 }

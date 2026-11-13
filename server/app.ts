@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import {
   AI_PROVIDERS,
+  ANNOTATION_DENSITIES,
   INK_COLORS,
   INK_STYLES,
 } from "../shared/types.js";
@@ -99,8 +100,16 @@ const settingsPatchSchema = z
     provider: z.enum(AI_PROVIDERS).optional(),
     model: z.string().max(160).optional(),
     autoFolder: z.boolean().optional(),
+    annotationDensity: z.enum(ANNOTATION_DENSITIES).optional(),
   })
   .strict();
+
+const annotateRequestSchema = z
+  .object({
+    density: z.enum(ANNOTATION_DENSITIES).optional(),
+  })
+  .strict()
+  .optional();
 
 export function createApp(options: CreateAppOptions) {
   const {
@@ -322,7 +331,14 @@ export function createApp(options: CreateAppOptions) {
     const page = store.getPage(req.params.id);
     if (!page) throw new AppError(404, "找不到此頁面。");
 
-    const settings = store.getSettings();
+    const parsedBody = annotateRequestSchema.safeParse(req.body);
+    if (!parsedBody.success) throw new AppError(400, "標註密度參數格式不正確。");
+
+    const baseSettings = store.getSettings();
+    const settings = {
+      ...baseSettings,
+      annotationDensity: parsedBody.data?.density ?? baseSettings.annotationDensity ?? "balanced",
+    };
     const folders = store.listFolders();
     const controller = new AbortController();
     const onClose = () => {

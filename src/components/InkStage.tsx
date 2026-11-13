@@ -33,7 +33,6 @@ interface MeasuredAnchor {
   blockTextRight: number;
   blockBottom: number;
   blockIsSingleLine: boolean;
-  isFallbackAnchor?: boolean;
 }
 
 interface PlacedNoteMeta {
@@ -119,6 +118,55 @@ function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
+function findSubstrSpan(text: string, needle: string): { start: number; end: number } | null {
+  const clean = needle.trim();
+  if (!clean || !text) return null;
+  const direct = text.indexOf(clean);
+  if (direct >= 0) return { start: direct, end: direct + clean.length };
+  const tokens = clean.split(/\s+/).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (tokens.length > 1) {
+    const match = new RegExp(tokens.join("\\s+")).exec(text);
+    if (match?.[0]) return { start: match.index, end: match.index + match[0].length };
+  }
+  return null;
+}
+
+/** Resolve an annotation's visible text span against either original or translated text. */
+function resolveDisplaySpan(text: string, ann: PageAnnotation): { start: number; end: number } | null {
+  if (!text.trim()) return null;
+  if (
+    ann.startOffset >= 0 &&
+    ann.endOffset > ann.startOffset &&
+    ann.endOffset <= text.length &&
+    text.slice(ann.startOffset, ann.endOffset) === ann.quote
+  ) {
+    return { start: ann.startOffset, end: ann.endOffset };
+  }
+  const direct = findSubstrSpan(text, ann.quote);
+  if (direct) return direct;
+
+  if (ann.translatedQuote) {
+    const tr = findSubstrSpan(text, ann.translatedQuote);
+    if (tr) return tr;
+  }
+
+  // Fallback for already-translated pages without mapped translatedQuote: anchor on shared technical tokens
+  const techTokens = Array.from(new Set(ann.quote.match(/[A-Za-z0-9][A-Za-z0-9_./:-]{2,}/g) ?? [])).sort(
+    (a, b) => b.length - a.length,
+  );
+  for (const tok of techTokens) {
+    const idx = text.indexOf(tok);
+    if (idx >= 0) return { start: idx, end: idx + tok.length };
+  }
+
+  if (ann.style === "bracket") {
+    return { start: 0, end: text.length };
+  }
+  const stopMatch = /[。；！？\n]/.exec(text.slice(8, 38));
+  const clauseEnd = stopMatch ? 8 + stopMatch.index : Math.min(text.length, 28);
+  return clauseEnd > 0 ? { start: 0, end: clauseEnd } : null;
+}
+
 function renderInteractiveText(
   text: string,
   annotations: PageAnnotation[],
@@ -127,24 +175,22 @@ function renderInteractiveText(
   showInk: boolean,
 ): ReactNode {
   if (!showInk || !annotations.length) return text;
-  const sorted = [...annotations]
-    .filter(
-      (a) =>
-        a.startOffset >= 0 &&
-        a.endOffset > a.startOffset &&
-        a.endOffset <= text.length &&
-        text.slice(a.startOffset, a.endOffset) === a.quote,
-    )
-    .sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset);
+  const resolved = annotations
+    .map((a) => {
+      const span = resolveDisplaySpan(text, a);
+      return span ? { ann: a, start: span.start, end: span.end } : null;
+    })
+    .filter((item): item is { ann: PageAnnotation; start: number; end: number } => Boolean(item))
+    .sort((a, b) => a.start - b.start || b.end - a.end);
 
   const pieces: ReactNode[] = [];
   let cursor = 0;
-  for (const ann of sorted) {
-    if (ann.startOffset < cursor) continue;
-    if (ann.startOffset > cursor) {
-      pieces.push(text.slice(cursor, ann.startOffset));
+  for (const { ann, start, end } of resolved) {
+    if (start < cursor) continue;
+    if (start > cursor) {
+      pieces.push(text.slice(cursor, start));
     }
-    const slice = text.slice(ann.startOffset, ann.endOffset);
+    const slice = text.slice(start, end);
     const isActive = activeId === ann.id;
     pieces.push(
       <mark
@@ -170,7 +216,7 @@ function renderInteractiveText(
         {slice}
       </mark>,
     );
-    cursor = ann.endOffset;
+    cursor = end;
   }
   if (cursor < text.length) {
     pieces.push(text.slice(cursor));
@@ -501,45 +547,10 @@ export default function InkStage({
       const blockEl = blockRefs.current.get(ann.blockId);
       if (!blockEl) continue;
       const fullText = blockEl.textContent ?? "";
-      let start = ann.startOffset;
-      let end = ann.endOffset;
-      let fallbackToBlock = false;
-      if (start < 0 || end > fullText.length || fullText.slice(start, end) !== ann.quote) {
-        const idx = fullText.indexOf(ann.quote);
-        if (idx >= 0) {
-          start = idx;
-          end = idx + ann.quote.length;
-        } else {
-          fallbackToBlock = true;
-        }
-      }
+      const span = resolveDisplaySpan(fullText, ann);
+      if (!span) continue;
 
-      if (fallbackToBlock) {
-        const r = blockEl.getBoundingClientRect();
-        if (r.width < 2 || r.height < 2) continue;
-        const box: BoxRect = {
-          left: r.left - stageRect.left,
-          top: r.top - stageRect.top,
-          width: r.width,
-          height: r.height,
-        };
-        const bg = blockGeom.get(ann.blockId);
-        nextMeasured.push({
-          annotation: ann,
-          blockKind: blockKindById.get(ann.blockId) ?? "paragraph",
-          rects: [box],
-          bounds: box,
-          firstRect: box,
-          lastRect: box,
-          blockTextRight: bg?.textRight ?? box.left + box.width,
-          blockBottom: bg?.bottom ?? box.top + box.height,
-          blockIsSingleLine: bg?.singleLine ?? false,
-          isFallbackAnchor: true,
-        });
-        continue;
-      }
-
-      const range = findRangeInElement(blockEl, start, end);
+      const range = findRangeInElement(blockEl, span.start, span.end);
       if (!range) continue;
       const clientRects = Array.from(range.getClientRects()).filter((r) => r.width > 1 && r.height > 1);
       if (!clientRects.length) continue;
@@ -1013,8 +1024,7 @@ export default function InkStage({
 
             return (
               <g key={annotation.id} className={`ink-stroke-group ${isActive ? "is-active" : ""}`}>
-                {!m.isFallbackAnchor &&
-                  annotation.style === "highlight" &&
+                {annotation.style === "highlight" &&
                   rects.map((rect, idx) => (
                     <path
                       key={idx}
@@ -1024,8 +1034,7 @@ export default function InkStage({
                       className="ink-highlighter-path"
                     />
                   ))}
-                {!m.isFallbackAnchor &&
-                  annotation.style === "underline" &&
+                {annotation.style === "underline" &&
                   rects.map((rect, idx) => (
                     <path
                       key={idx}
@@ -1036,8 +1045,7 @@ export default function InkStage({
                       strokeLinecap="round"
                     />
                   ))}
-                {!m.isFallbackAnchor &&
-                  annotation.style === "box" &&
+                {annotation.style === "box" &&
                   rects.map((rect, idx) => (
                     <path
                       key={idx}
@@ -1049,7 +1057,7 @@ export default function InkStage({
                       strokeLinejoin="round"
                     />
                   ))}
-                {!m.isFallbackAnchor && annotation.style === "bracket" && (
+                {annotation.style === "bracket" && (
                   <path
                     d={bracketPath(bounds, annotation.id)}
                     fill="none"

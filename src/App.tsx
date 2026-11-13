@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import {
   INK_COLORS,
+  type AnnotationDensity,
   type ExplainBridgeStatus,
   type Folder,
   type InkColor,
@@ -88,6 +89,115 @@ type Route =
   | { kind: "page"; id: string }
   | { kind: "handoff" };
 
+const DENSITY_OPTIONS: ReadonlyArray<{
+  value: AnnotationDensity;
+  label: string;
+  shortLabel: string;
+  freq: string;
+  desc: string;
+  bars: 1 | 2 | 3;
+}> = [
+  {
+    value: "sparse",
+    label: "精簡重點",
+    shortLabel: "精簡",
+    freq: "約 1–2 處／區段",
+    desc: "只標核心結論與關鍵圖表，保留清爽閱讀留白",
+    bars: 1,
+  },
+  {
+    value: "balanced",
+    label: "均衡導讀",
+    shortLabel: "均衡",
+    freq: "約 2–4 處／區段",
+    desc: "論點、關鍵概念、實務技巧與圖表並重（預設）",
+    bars: 2,
+  },
+  {
+    value: "thorough",
+    label: "深入細讀",
+    shortLabel: "深入",
+    freq: "約 4–7 處／區段",
+    desc: "高頻詳註推導細節、專有名詞圈選與陷阱提醒",
+    bars: 3,
+  },
+];
+
+function DensityPreviewThumb({ level }: { level: AnnotationDensity }) {
+  return (
+    <svg viewBox="0 0 64 46" className="density-thumb-svg" aria-hidden="true">
+      {/* Paper sheet */}
+      <rect x="2" y="2" width="44" height="42" rx="2" className="d-thumb-sheet" />
+      {/* Prose lines */}
+      <line x1="7" y1="9" x2="31" y2="9" className="d-thumb-line is-title" />
+      <line x1="7" y1="15" x2="39" y2="15" className="d-thumb-line" />
+      <line x1="7" y1="20" x2="37" y2="20" className="d-thumb-line" />
+      <line x1="7" y1="25" x2="40" y2="25" className="d-thumb-line" />
+      <line x1="7" y1="31" x2="35" y2="31" className="d-thumb-line" />
+      <line x1="7" y1="36" x2="38" y2="36" className="d-thumb-line" />
+      {/* Sparse (always 1 core highlight + 1 margin note) */}
+      <rect x="7" y="13.5" width="22" height="3.2" rx="0.8" className="d-thumb-ink is-amber" />
+      <line x1="48" y1="15" x2="61" y2="15" className="d-thumb-note is-amber" />
+      <line x1="48" y1="18" x2="57" y2="18" className="d-thumb-note-sub" />
+      {/* Balanced adds middle underline + lower margin note */}
+      {level !== "sparse" ? (
+        <>
+          <line x1="14" y1="26.8" x2="36" y2="26.8" className="d-thumb-stroke is-violet" />
+          <line x1="48" y1="26" x2="61" y2="26" className="d-thumb-note is-violet" />
+          <line x1="48" y1="29" x2="58" y2="29" className="d-thumb-note-sub" />
+        </>
+      ) : null}
+      {/* Thorough adds dense box + bracket + extra margin note */}
+      {level === "thorough" ? (
+        <>
+          <rect x="6.5" y="18.2" width="16" height="4" rx="1" className="d-thumb-box is-coral" />
+          <path d="M 41 29.5 L 43 29.5 L 43 37 L 41 37" className="d-thumb-box is-mint" />
+          <line x1="48" y1="7" x2="60" y2="7" className="d-thumb-note is-coral" />
+          <line x1="48" y1="35" x2="61" y2="35" className="d-thumb-note is-mint" />
+          <line x1="48" y1="38" x2="56" y2="38" className="d-thumb-note-sub" />
+        </>
+      ) : null}
+    </svg>
+  );
+}
+
+function DensitySelectorCards({
+  value,
+  onChange,
+  compact = false,
+}: {
+  value: AnnotationDensity;
+  onChange: (next: AnnotationDensity) => void;
+  compact?: boolean;
+}) {
+  return (
+    <div className={`density-cards-list ${compact ? "is-compact" : ""}`} role="radiogroup" aria-label="AI 標註數量與頻率">
+      {DENSITY_OPTIONS.map((opt) => {
+        const active = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            className={`density-card ${active ? "is-active" : ""}`}
+            onClick={() => onChange(opt.value)}
+          >
+            <DensityPreviewThumb level={opt.value} />
+            <span className="density-card-copy">
+              <span className="density-card-head">
+                <strong>{opt.label}</strong>
+                <span className="density-freq-tag">{opt.freq}</span>
+              </span>
+              <small>{opt.desc}</small>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function parseRoute(hash: string): Route {
   const [rawPath] = hash.replace(/^#/, "").split("?", 2);
   const path = rawPath || "/";
@@ -118,6 +228,7 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [densityMenuOpen, setDensityMenuOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [scrollProgress, setScrollProgress] = useState(0);
@@ -168,8 +279,12 @@ export default function App() {
     provider: "codex",
     model: "",
     autoFolder: true,
+    annotationDensity: "balanced",
   });
   const [notice, setNotice] = useState<{ kind: "error" | "info"; text: string } | null>(null);
+
+  const currentDensity: AnnotationDensity = settings.annotationDensity ?? "balanced";
+  const currentDensityMeta = DENSITY_OPTIONS.find((o) => o.value === currentDensity) ?? DENSITY_OPTIONS[1];
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -181,18 +296,24 @@ export default function App() {
   }, [readingFont]);
 
   useEffect(() => {
-    if (!moreMenuOpen) return;
+    if (!moreMenuOpen && !densityMenuOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMoreMenuOpen(false);
+      if (e.key === "Escape") {
+        setMoreMenuOpen(false);
+        setDensityMenuOpen(false);
+      }
     };
-    const onClick = () => setMoreMenuOpen(false);
+    const onClick = () => {
+      setMoreMenuOpen(false);
+      setDensityMenuOpen(false);
+    };
     window.addEventListener("keydown", onKey);
     window.addEventListener("click", onClick);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("click", onClick);
     };
-  }, [moreMenuOpen]);
+  }, [moreMenuOpen, densityMenuOpen]);
 
   useEffect(() => {
     const onHash = () => {
@@ -370,8 +491,20 @@ export default function App() {
     }
   };
 
-  const handleAnnotatePage = async () => {
+  const handleSelectDensity = async (next: AnnotationDensity) => {
+    setSettings((s) => ({ ...s, annotationDensity: next }));
+    try {
+      const saved = await apiWrite<ProviderSettings>("PATCH", "/api/settings", { annotationDensity: next });
+      setSettings(saved);
+    } catch {
+      // Non-fatal: still uses selected density on next annotate request
+    }
+  };
+
+  const handleAnnotatePage = async (densityOverride?: AnnotationDensity) => {
     if (!activePage || annotating) return;
+    setDensityMenuOpen(false);
+    const chosenDensity = densityOverride ?? currentDensity;
     const controller = new AbortController();
     annotateAbortRef.current = controller;
     setAnnotating(true);
@@ -382,7 +515,7 @@ export default function App() {
         page: SavedPage;
         folders: Folder[];
         explain: ExplainBridgeStatus;
-      }>(activePage.id, (msg) => setAnnotateStage(msg), controller.signal);
+      }>(activePage.id, (msg) => setAnnotateStage(msg), controller.signal, chosenDensity);
       setActivePage(res.page);
       setFolders(res.folders);
       setExplainStatus(res.explain);
@@ -971,28 +1104,74 @@ export default function App() {
                   </div>
                 </div>
 
-                {activePage.annotatedAt ? (
-                  <button
-                    type="button"
-                    className="btn-secondary is-compact"
-                    disabled={annotating}
-                    onClick={handleAnnotatePage}
-                    title="重新執行 AI 塗鴉標註（保留手寫批註）"
-                  >
-                    <RefreshCw size={13} className={annotating ? "spin" : ""} />
-                    <span>{annotating ? "標註中…" : "重跑標註"}</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn-primary is-compact"
-                    disabled={annotating}
-                    onClick={handleAnnotatePage}
-                  >
-                    <Sparkles size={13} className={annotating ? "spin" : ""} />
-                    <span>{annotating ? "標註中…" : "AI 塗鴉標註"}</span>
-                  </button>
-                )}
+                <div className="ai-annotate-wrap" onClick={(e) => e.stopPropagation()}>
+                  <div className={`ai-annotate-split ${activePage.annotatedAt ? "is-rerun" : "is-primary"}`}>
+                    <button
+                      type="button"
+                      className="ai-annotate-main"
+                      disabled={annotating}
+                      onClick={() => void handleAnnotatePage()}
+                      title={
+                        activePage.annotatedAt
+                          ? `依「${currentDensityMeta.label}」模式重新標註（保留手寫批註）`
+                          : `依「${currentDensityMeta.label}」模式產生 AI 塗鴉標註`
+                      }
+                    >
+                      {activePage.annotatedAt ? (
+                        <RefreshCw size={13} className={annotating ? "spin" : ""} aria-hidden="true" />
+                      ) : (
+                        <Sparkles size={13} className={annotating ? "spin" : ""} aria-hidden="true" />
+                      )}
+                      <span>{annotating ? "標註中…" : activePage.annotatedAt ? "重跑標註" : "AI 塗鴉標註"}</span>
+                      <span className="ink-rhythm-meter" aria-hidden="true" title={`目前密度：${currentDensityMeta.label}`}>
+                        {[1, 2, 3].map((n) => (
+                          <i key={n} className={n <= currentDensityMeta.bars ? "is-on" : ""} />
+                        ))}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="ai-annotate-caret"
+                      disabled={annotating}
+                      aria-label="選擇標註數量與頻率"
+                      aria-expanded={densityMenuOpen}
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        setDensityMenuOpen((v) => !v);
+                      }}
+                    >
+                      <ChevronDown size={13} aria-hidden="true" />
+                    </button>
+                  </div>
+
+                  {densityMenuOpen ? (
+                    <div className="density-popover" role="dialog" aria-label="設定 AI 標註數量與頻率">
+                      <div className="density-popover-head">
+                        <span>標註數量與頻率</span>
+                        <span className="density-active-pill">{currentDensityMeta.shortLabel}</span>
+                      </div>
+                      <DensitySelectorCards
+                        value={currentDensity}
+                        onChange={(next) => void handleSelectDensity(next)}
+                        compact
+                      />
+                      <div className="density-popover-foot">
+                        <button
+                          type="button"
+                          className="btn-primary is-compact density-run-btn"
+                          onClick={() => void handleAnnotatePage(currentDensity)}
+                        >
+                          <Sparkles size={12.5} aria-hidden="true" />
+                          <span>
+                            {activePage.annotatedAt
+                              ? `以「${currentDensityMeta.label}」重跑標註`
+                              : `以「${currentDensityMeta.label}」開始標註`}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               </>
             )}
           </div>
@@ -1433,6 +1612,14 @@ export default function App() {
                   placeholder="例如 gpt-5 / claude-sonnet-4-5 / gemini-3.8-flash-medium"
                 />
               </label>
+
+              <div className="field-block">
+                <span>AI 預設標註數量與頻率</span>
+                <DensitySelectorCards
+                  value={currentDensity}
+                  onChange={(next) => setSettings((s) => ({ ...s, annotationDensity: next }))}
+                />
+              </div>
 
               <label className="checkbox-row">
                 <input
