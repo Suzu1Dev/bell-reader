@@ -577,6 +577,71 @@ test("End-to-end API: URL dedup, AI doodle markup, auto-folder, manual note rete
     );
     assert.equal(aiSketchResult.annotations[0]?.sketch?.kind, "axes");
     assert.equal(aiSketchResult.annotations[0]?.sketch?.shape, "threshold");
+
+    // 13. Resilient parsing tolerates nullable/malformed optional sketch, synonym kinds, and oversized strings
+    const tolerantResult = await annotatePageWithAI(
+      {
+        ...(enPageBody.page as object),
+        id: "sketch-tolerant-test",
+        title: "RISC-V Tolerant Test",
+        blocks: [
+          {
+            id: "b1",
+            kind: "paragraph",
+            text: "Pipeline throughput saturates past the memory bandwidth knee when threads contend.",
+          },
+        ],
+      } as never,
+      [],
+      { provider: "codex", model: "", autoFolder: false, annotationDensity: "thorough" },
+      new AbortController().signal,
+      async () => ({
+        topic: "",
+        tags: [],
+        annotations: [
+          {
+            blockId: "b1",
+            quote: "Pipeline throughput",
+            style: "highlight",
+            color: "sky",
+            label: "這是一個比較長一點點的手寫標籤也沒問題",
+            note: "超過一點長度或是帶著 sketch: null 與空 caption 都不會整頁失敗。",
+            topic: "",
+            anchorX: null,
+            sketch: null,
+          },
+          {
+            blockId: "b1",
+            quote: "memory bandwidth knee",
+            style: "underline",
+            color: "coral",
+            label: "同義字流程圖",
+            note: "允許 flowchart 同義字與空 caption 清理。",
+            topic: "Bandwidth",
+            sketch: {
+              kind: "flowchart",
+              caption: "",
+              nodes: ["Fetch", "Decode", "Execute"],
+              shape: null,
+            },
+          },
+          {
+            blockId: "b1",
+            quote: "threads contend",
+            style: "box",
+            color: "mint",
+            label: "降級保護",
+            note: "只有單一節點的殘缺 sketch 應自動捨棄圖解、保留文字筆記。",
+            sketch: { kind: "layers", nodes: ["只有一個節點"] },
+          },
+        ],
+      }),
+    );
+    assert.equal(tolerantResult.annotations.length, 3);
+    assert.equal(tolerantResult.annotations[0]?.sketch, undefined);
+    assert.equal(tolerantResult.annotations[1]?.sketch?.kind, "flow");
+    assert.equal(tolerantResult.annotations[1]?.sketch?.caption, undefined);
+    assert.equal(tolerantResult.annotations[2]?.sketch, undefined);
   } finally {
     await srv.close();
     store.close();
