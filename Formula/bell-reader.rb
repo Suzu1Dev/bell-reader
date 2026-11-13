@@ -2,7 +2,7 @@ class BellReader < Formula
   desc "Local-first web article snapshot and organic ink annotation reader"
   homepage "https://github.com/Suzu1Dev/bell-reader"
   url "https://github.com/Suzu1Dev/bell-reader/archive/refs/heads/main.tar.gz"
-  version "1.0.1"
+  version "1.0.2"
   license "Apache-2.0"
   head "https://github.com/Suzu1Dev/bell-reader.git", branch: "main"
 
