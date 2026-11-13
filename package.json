@@ -16,7 +16,9 @@
     "bin",
     "dist",
     "server",
+    "!server/**/*.test.ts",
     "shared",
+    "!shared/**/*.test.ts",
     "LICENSE",
     "README.md",
     "README.zh-TW.md"
@@ -64,6 +66,9 @@
     "happy-dom": "^20.14.5",
     "typescript": "^5.9.0",
     "vite": "^7.1.0"
+  },
+  "overrides": {
+    "postcss-selector-parser": "^6.1.5"
   },
   "engines": {
     "node": ">=20"
