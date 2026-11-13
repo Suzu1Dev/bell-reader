@@ -52,4 +52,4 @@ npm run build
 
 ## 授權
 
-[MIT](./LICENSE)
+[Apache-2.0](./LICENSE) · [Trademarks](./TRADEMARKS.md)

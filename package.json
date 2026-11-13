@@ -1,8 +1,8 @@
 {
   "name": "bell-reader",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Local-first web article snapshot & organic ink annotation reader — standalone or part of BELL Suite.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "repository": {
     "type": "git",
@@ -21,7 +21,9 @@
     "!shared/**/*.test.ts",
     "LICENSE",
     "README.md",
-    "README.zh-TW.md"
+    "README.zh-TW.md",
+    "NOTICE",
+    "TRADEMARKS.md"
   ],
   "scripts": {
     "dev": "concurrently -k -n api,web \"tsx watch --env-file-if-exists=.env server/index.ts\" \"vite --host 127.0.0.1\"",

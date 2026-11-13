@@ -73,4 +73,4 @@ npm run build      # TypeScript check + production Vite bundle
 
 ## License
 
-[MIT](./LICENSE)
+[Apache-2.0](./LICENSE) · [Trademarks](./TRADEMARKS.md)
