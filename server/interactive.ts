@@ -250,6 +250,8 @@ const SAFE_MATH_METHODS = new Set([
   "tan", "tanh", "trunc",
 ]);
 
+const WRITABLE_NUMERIC_BUILTINS = new Set(["Number", "parseInt", "parseFloat", "Math"]);
+
 interface SimScope {
   isFunction: boolean;
   vars: Set<string>;
@@ -364,6 +366,71 @@ function isShadowed(name: string, scope: SimScope): boolean {
   return false;
 }
 
+function isBuiltinShadowed(name: string, scope: SimScope, mutatedBuiltins: Set<string>): boolean {
+  if (mutatedBuiltins.has(name)) return true;
+  let cur: SimScope | null = scope;
+  while (cur) {
+    if (cur.lexicals.has(name) || cur.vars.has(name)) return true;
+    cur = cur.parent;
+  }
+  return false;
+}
+
+function getRootIdentifierName(node: ts.Node): string | null {
+  let cur: ts.Node = node;
+  while (true) {
+    if (ts.isParenthesizedExpression(cur)) cur = cur.expression;
+    else if (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) cur = cur.expression;
+    else break;
+  }
+  return ts.isIdentifier(cur) ? cur.text : null;
+}
+
+function collectMutatedNumericBuiltins(sf: ts.SourceFile): Set<string> {
+  const mutated = new Set<string>();
+  const walk = (node: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    ) {
+      const names = new Set<string>();
+      collectAssignmentTargetNames(node.left, names);
+      for (const n of names) {
+        if (WRITABLE_NUMERIC_BUILTINS.has(n)) mutated.add(n);
+      }
+      const root = getRootIdentifierName(node.left);
+      if (root && WRITABLE_NUMERIC_BUILTINS.has(root)) mutated.add(root);
+    } else if (
+      (ts.isPrefixUnaryExpression(node) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) ||
+      ts.isPostfixUnaryExpression(node)
+    ) {
+      const root = getRootIdentifierName(node.operand);
+      if (root && WRITABLE_NUMERIC_BUILTINS.has(root)) mutated.add(root);
+    } else if (ts.isDeleteExpression(node)) {
+      const root = getRootIdentifierName(node.expression);
+      if (root && WRITABLE_NUMERIC_BUILTINS.has(root)) mutated.add(root);
+    } else if ((ts.isForInStatement(node) || ts.isForOfStatement(node)) && node.initializer) {
+      const names = new Set<string>();
+      collectAssignmentTargetNames(node.initializer, names);
+      for (const n of names) {
+        if (WRITABLE_NUMERIC_BUILTINS.has(n)) mutated.add(n);
+      }
+      const root = getRootIdentifierName(node.initializer);
+      if (root && WRITABLE_NUMERIC_BUILTINS.has(root)) mutated.add(root);
+    } else if (ts.isIdentifier(node) && node.text === "Math" && isInReferencePosition(node)) {
+      const p = node.parent;
+      if (!(p && ts.isPropertyAccessExpression(p) && p.expression === node)) {
+        mutated.add("Math");
+      }
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(sf);
+  return mutated;
+}
+
 function findScopeForVar(name: string, scope: SimScope): SimScope {
   let cur: SimScope | null = scope;
   while (cur) {
@@ -427,9 +494,14 @@ function evalStaticString(expr: ts.Expression, scope: SimScope): string | null {
   return null;
 }
 
-function isProvablyNumeric(expr: ts.Expression, scope: SimScope, allowLengthProp = false): boolean {
+function isProvablyNumeric(
+  expr: ts.Expression,
+  scope: SimScope,
+  allowLengthProp = false,
+  mutatedBuiltins: Set<string> = new Set(),
+): boolean {
   if (ts.isParenthesizedExpression(expr)) {
-    return isProvablyNumeric(expr.expression, scope, allowLengthProp);
+    return isProvablyNumeric(expr.expression, scope, allowLengthProp, mutatedBuiltins);
   }
   if (ts.isNumericLiteral(expr)) {
     return true;
@@ -452,15 +524,15 @@ function isProvablyNumeric(expr: ts.Expression, scope: SimScope, allowLengthProp
       op === ts.SyntaxKind.TildeToken ||
       op === ts.SyntaxKind.ExclamationToken
     ) {
-      return isProvablyNumeric(expr.operand, scope, true);
+      return isProvablyNumeric(expr.operand, scope, true, mutatedBuiltins);
     }
     if (op === ts.SyntaxKind.PlusPlusToken || op === ts.SyntaxKind.MinusMinusToken) {
-      return isProvablyNumeric(expr.operand, scope, false);
+      return isProvablyNumeric(expr.operand, scope, false, mutatedBuiltins);
     }
     return false;
   }
   if (ts.isPostfixUnaryExpression(expr)) {
-    return isProvablyNumeric(expr.operand, scope, false);
+    return isProvablyNumeric(expr.operand, scope, false, mutatedBuiltins);
   }
   if (ts.isPropertyAccessExpression(expr)) {
     return allowLengthProp && expr.name.text === "length";
@@ -471,7 +543,7 @@ function isProvablyNumeric(expr: ts.Expression, scope: SimScope, allowLengthProp
       (expr.expression.text === "Number" ||
         expr.expression.text === "parseInt" ||
         expr.expression.text === "parseFloat") &&
-      !isShadowed(expr.expression.text, scope)
+      !isBuiltinShadowed(expr.expression.text, scope, mutatedBuiltins)
     ) {
       return true;
     }
@@ -479,7 +551,7 @@ function isProvablyNumeric(expr: ts.Expression, scope: SimScope, allowLengthProp
       ts.isPropertyAccessExpression(expr.expression) &&
       ts.isIdentifier(expr.expression.expression) &&
       expr.expression.expression.text === "Math" &&
-      !isShadowed("Math", scope) &&
+      !isBuiltinShadowed("Math", scope, mutatedBuiltins) &&
       SAFE_MATH_METHODS.has(expr.expression.name.text)
     ) {
       return true;
@@ -488,14 +560,17 @@ function isProvablyNumeric(expr: ts.Expression, scope: SimScope, allowLengthProp
   }
   if (ts.isConditionalExpression(expr)) {
     return (
-      isProvablyNumeric(expr.whenTrue, scope, allowLengthProp) &&
-      isProvablyNumeric(expr.whenFalse, scope, allowLengthProp)
+      isProvablyNumeric(expr.whenTrue, scope, allowLengthProp, mutatedBuiltins) &&
+      isProvablyNumeric(expr.whenFalse, scope, allowLengthProp, mutatedBuiltins)
     );
   }
   if (ts.isBinaryExpression(expr)) {
     const op = expr.operatorToken.kind;
     if (op === ts.SyntaxKind.PlusToken) {
-      return isProvablyNumeric(expr.left, scope, false) && isProvablyNumeric(expr.right, scope, false);
+      return (
+        isProvablyNumeric(expr.left, scope, false, mutatedBuiltins) &&
+        isProvablyNumeric(expr.right, scope, false, mutatedBuiltins)
+      );
     }
     if (op === ts.SyntaxKind.BarToken && ts.isNumericLiteral(expr.right) && expr.right.text === "0") {
       return true;
@@ -521,7 +596,10 @@ function isProvablyNumeric(expr: ts.Expression, scope: SimScope, allowLengthProp
       op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
       op === ts.SyntaxKind.ExclamationEqualsEqualsToken
     ) {
-      return isProvablyNumeric(expr.left, scope, true) && isProvablyNumeric(expr.right, scope, true);
+      return (
+        isProvablyNumeric(expr.left, scope, true, mutatedBuiltins) &&
+        isProvablyNumeric(expr.right, scope, true, mutatedBuiltins)
+      );
     }
     return false;
   }
@@ -569,10 +647,58 @@ function isInReferencePosition(id: ts.Identifier): boolean {
   return true;
 }
 
+function validateDestructuringAssignmentTarget(node: ts.Node, scope: SimScope): void {
+  if (ts.isParenthesizedExpression(node) || ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) {
+    validateDestructuringAssignmentTarget(node.expression, scope);
+    return;
+  }
+  if (ts.isArrayLiteralExpression(node)) {
+    for (const el of node.elements) {
+      validateDestructuringAssignmentTarget(el, scope);
+    }
+    return;
+  }
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    validateDestructuringAssignmentTarget(node.left, scope);
+    return;
+  }
+  if (ts.isObjectLiteralExpression(node)) {
+    for (const prop of node.properties) {
+      if (ts.isPropertyAssignment(prop)) {
+        let key: string | null = null;
+        if (
+          ts.isIdentifier(prop.name) ||
+          ts.isStringLiteral(prop.name) ||
+          ts.isNoSubstitutionTemplateLiteral(prop.name)
+        ) {
+          key = prop.name.text;
+        } else if (ts.isComputedPropertyName(prop.name)) {
+          key = evalStaticString(prop.name.expression, scope);
+          if (key === null) {
+            throw new AppError(422, "互動模擬未通過安全檢查：禁止解構受限或動態屬性。");
+          }
+        }
+        if (key !== null && (FORBIDDEN_PROPS.has(key) || FORBIDDEN_DESTRUCTURE_GLOBALS.has(key))) {
+          throw new AppError(422, "互動模擬未通過安全檢查：禁止解構受限屬性或全域介面。");
+        }
+        validateDestructuringAssignmentTarget(prop.initializer, scope);
+      } else if (ts.isShorthandPropertyAssignment(prop)) {
+        const key = prop.name.text;
+        if (FORBIDDEN_PROPS.has(key) || FORBIDDEN_DESTRUCTURE_GLOBALS.has(key)) {
+          throw new AppError(422, "互動模擬未通過安全檢查：禁止解構受限屬性或全域介面。");
+        }
+      } else if (ts.isSpreadAssignment(prop)) {
+        validateDestructuringAssignmentTarget(prop.expression, scope);
+      }
+    }
+  }
+}
+
 function validateBracketOrComputedKey(
   expr: ts.Expression,
   scope: SimScope,
   pendingNumericChecks: Array<{ expr: ts.Expression; scope: SimScope }>,
+  mutatedBuiltins: Set<string>,
 ): void {
   if (ts.isIdentifier(expr) && isTaintedVar(expr.text, scope)) {
     throw new AppError(422, "互動模擬未通過安全檢查：禁止動態索引存取受限原型或屬性。");
@@ -587,7 +713,7 @@ function validateBracketOrComputedKey(
     }
     return;
   }
-  if (!isProvablyNumeric(expr, scope, false)) {
+  if (!isProvablyNumeric(expr, scope, false, mutatedBuiltins)) {
     throw new AppError(422, "互動模擬未通過安全檢查：禁止非數值動態計算屬性索引。");
   }
   pendingNumericChecks.push({ expr, scope });
@@ -603,7 +729,9 @@ function validateSimulationScript(rawScript: string): void {
   const rootScope = createSimScope(false, null);
   hoistVarsInScope(sf, rootScope.vars);
   collectBlockLexicals(sf.statements, rootScope.lexicals);
+  const mutatedBuiltins = collectMutatedNumericBuiltins(sf);
   const pendingNumericChecks: Array<{ expr: ts.Expression; scope: SimScope }> = [];
+  const numericAssignments: Array<{ name: string; targetScope: SimScope; expr: ts.Expression; evalScope: SimScope }> = [];
 
   const visit = (node: ts.Node, scope: SimScope, fnScope: SimScope, inClass: boolean): void => {
     if (
@@ -699,11 +827,11 @@ function validateSimulationScript(rawScript: string): void {
     }
 
     if (ts.isElementAccessExpression(node)) {
-      validateBracketOrComputedKey(node.argumentExpression, scope, pendingNumericChecks);
+      validateBracketOrComputedKey(node.argumentExpression, scope, pendingNumericChecks, mutatedBuiltins);
     }
 
     if (ts.isComputedPropertyName(node)) {
-      validateBracketOrComputedKey(node.expression, scope, pendingNumericChecks);
+      validateBracketOrComputedKey(node.expression, scope, pendingNumericChecks, mutatedBuiltins);
     }
 
     if (ts.isObjectBindingPattern(node)) {
@@ -739,12 +867,20 @@ function validateSimulationScript(rawScript: string): void {
       const isLexical =
         ts.isVariableDeclarationList(node.parent) &&
         (node.parent.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
+      const isConst =
+        ts.isVariableDeclarationList(node.parent) &&
+        (node.parent.flags & ts.NodeFlags.Const) !== 0;
       if (ts.isIdentifier(node.name)) {
         const targetScope = isLexical ? scope : findScopeForVar(node.name.text, scope);
         if (node.initializer) {
           const s = evalStaticString(node.initializer, scope);
           if (s !== null) {
-            targetScope.constStrings.set(node.name.text, s);
+            // Only cache immutable `const` bindings to avoid mutable `let`/`var` TOCTOU
+            if (isConst) {
+              targetScope.constStrings.set(node.name.text, s);
+            } else {
+              targetScope.constStrings.delete(node.name.text);
+            }
             if (FORBIDDEN_PROPS.has(s)) targetScope.taintedVars.add(node.name.text);
             targetScope.numericVars.delete(node.name.text);
             targetScope.nonNumericVars.add(node.name.text);
@@ -752,9 +888,10 @@ function validateSimulationScript(rawScript: string): void {
             targetScope.constStrings.delete(node.name.text);
             if (
               !targetScope.nonNumericVars.has(node.name.text) &&
-              isProvablyNumeric(node.initializer, scope)
+              isProvablyNumeric(node.initializer, scope, false, mutatedBuiltins)
             ) {
               targetScope.numericVars.add(node.name.text);
+              numericAssignments.push({ name: node.name.text, targetScope, expr: node.initializer, evalScope: scope });
             } else {
               targetScope.numericVars.delete(node.name.text);
               targetScope.nonNumericVars.add(node.name.text);
@@ -772,27 +909,28 @@ function validateSimulationScript(rawScript: string): void {
         }
       }
     } else if (ts.isBinaryExpression(node)) {
+      let lhs: ts.Expression = node.left;
+      while (ts.isParenthesizedExpression(lhs)) lhs = lhs.expression;
       if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-        if (ts.isIdentifier(node.left)) {
-          const targetScope = findScopeForVar(node.left.text, scope);
+        validateDestructuringAssignmentTarget(node.left, scope);
+        if (ts.isIdentifier(lhs)) {
+          const targetScope = findScopeForVar(lhs.text, scope);
+          targetScope.constStrings.delete(lhs.text);
           const s = evalStaticString(node.right, scope);
           if (s !== null) {
-            targetScope.constStrings.set(node.left.text, s);
-            if (FORBIDDEN_PROPS.has(s)) targetScope.taintedVars.add(node.left.text);
-            targetScope.numericVars.delete(node.left.text);
-            targetScope.nonNumericVars.add(node.left.text);
+            if (FORBIDDEN_PROPS.has(s)) targetScope.taintedVars.add(lhs.text);
+            targetScope.numericVars.delete(lhs.text);
+            targetScope.nonNumericVars.add(lhs.text);
+          } else if (
+            !targetScope.nonNumericVars.has(lhs.text) &&
+            isProvablyNumeric(node.right, scope, false, mutatedBuiltins)
+          ) {
+            targetScope.numericVars.add(lhs.text);
+            numericAssignments.push({ name: lhs.text, targetScope, expr: node.right, evalScope: scope });
           } else {
-            targetScope.constStrings.delete(node.left.text);
-            if (
-              !targetScope.nonNumericVars.has(node.left.text) &&
-              isProvablyNumeric(node.right, scope)
-            ) {
-              targetScope.numericVars.add(node.left.text);
-            } else {
-              targetScope.taintedVars.add(node.left.text);
-              targetScope.numericVars.delete(node.left.text);
-              targetScope.nonNumericVars.add(node.left.text);
-            }
+            targetScope.taintedVars.add(lhs.text);
+            targetScope.numericVars.delete(lhs.text);
+            targetScope.nonNumericVars.add(lhs.text);
           }
         } else {
           const names = new Set<string>();
@@ -801,27 +939,25 @@ function validateSimulationScript(rawScript: string): void {
             markNonNumeric(name, scope);
           }
         }
-      } else if (node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken && ts.isIdentifier(node.left)) {
-        const targetScope = findScopeForVar(node.left.text, scope);
-        const prev = resolveConstString(node.left.text, scope);
-        const rhs = evalStaticString(node.right, scope);
-        if (prev !== null && rhs !== null) {
-          const combined = prev + rhs;
-          targetScope.constStrings.set(node.left.text, combined);
-          if (FORBIDDEN_PROPS.has(combined)) targetScope.taintedVars.add(node.left.text);
-          targetScope.numericVars.delete(node.left.text);
-          targetScope.nonNumericVars.add(node.left.text);
-        } else if (
-          targetScope.numericVars.has(node.left.text) &&
-          !targetScope.nonNumericVars.has(node.left.text) &&
-          isProvablyNumeric(node.right, scope)
+      } else if (
+        (node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.BarBarEqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
+          node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken) &&
+        ts.isIdentifier(lhs)
+      ) {
+        const targetScope = findScopeForVar(lhs.text, scope);
+        targetScope.constStrings.delete(lhs.text);
+        if (
+          targetScope.numericVars.has(lhs.text) &&
+          !targetScope.nonNumericVars.has(lhs.text) &&
+          isProvablyNumeric(node.right, scope, false, mutatedBuiltins)
         ) {
-          // Numeric += stays numeric
+          numericAssignments.push({ name: lhs.text, targetScope, expr: node.right, evalScope: scope });
         } else {
-          targetScope.constStrings.delete(node.left.text);
-          targetScope.taintedVars.add(node.left.text);
-          targetScope.numericVars.delete(node.left.text);
-          targetScope.nonNumericVars.add(node.left.text);
+          targetScope.taintedVars.add(lhs.text);
+          targetScope.numericVars.delete(lhs.text);
+          targetScope.nonNumericVars.add(lhs.text);
         }
       }
     }
@@ -927,6 +1063,9 @@ function validateSimulationScript(rawScript: string): void {
         }
       }
       if ((ts.isForInStatement(node) || ts.isForOfStatement(node)) && node.initializer) {
+        if (!ts.isVariableDeclarationList(node.initializer)) {
+          validateDestructuringAssignmentTarget(node.initializer, loopScope);
+        }
         const targetNames = new Set<string>();
         collectAssignmentTargetNames(node.initializer, targetNames);
         for (const name of targetNames) {
@@ -956,8 +1095,23 @@ function validateSimulationScript(rawScript: string): void {
 
   visit(sf, rootScope, rootScope, false);
 
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of numericAssignments) {
+      if (
+        !item.targetScope.nonNumericVars.has(item.name) &&
+        !isProvablyNumeric(item.expr, item.evalScope, false, mutatedBuiltins)
+      ) {
+        item.targetScope.numericVars.delete(item.name);
+        item.targetScope.nonNumericVars.add(item.name);
+        changed = true;
+      }
+    }
+  }
+
   for (const pending of pendingNumericChecks) {
-    if (!isProvablyNumeric(pending.expr, pending.scope, false)) {
+    if (!isProvablyNumeric(pending.expr, pending.scope, false, mutatedBuiltins)) {
       throw new AppError(422, "互動模擬未通過安全檢查：禁止非數值動態計算屬性索引。");
     }
   }

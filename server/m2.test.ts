@@ -313,6 +313,33 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     '<script>(0, setTimeout)("alert(1)", 0);</script>',
     '<script>const [code] = ["alert(1)"]; setTimeout(code, 0);</script>',
     '<script>const st = setTimeout; st(function(){}, 0);</script>',
+    // Iteration 8 AST bypass vectors (ObjectLiteralExpression destructuring, ||=/&&=/??=, Number/Math shadowing & mutation, mutable string TOCTOU)
+    '<script>let F; ({ "constructor": F } = [].map); F("return 1")();</script>',
+    '<script>let d; ({ ownerDocument: d } = document.body);</script>',
+    '<script>let constructor; ({ constructor } = [].map);</script>',
+    '<script>let ownerDocument; ({ ownerDocument } = document.body);</script>',
+    '<script>let d; ([{ ownerDocument: d }] = [document.body]);</script>',
+    '<script>let d; for ({ ownerDocument: d } of [document.body]) {}</script>',
+    '<script>let d; const k = "owner" + "Document"; ({ [k]: d } = document.body);</script>',
+    '<script>let d; let k = "x"; ({ [k]: d } = document.body);</script>',
+    '<script>let k = 0; k ||= "constructor"; []["map"][k];</script>',
+    '<script>let k = 1; k &&= "constructor"; []["map"][k];</script>',
+    '<script>let k = 0; k ??= "constructor"; []["map"][k];</script>',
+    '<script>let k = 0; (k) ||= "constructor"; []["map"][k];</script>',
+    '<script>var Number = function(x){ return x; }; document.body[Number("ownerDocument")];</script>',
+    '<script>function Number(x){ return x; } []["map"][Number("constructor")];</script>',
+    '<script>{ var Number = function(x){ return x; }; } []["map"][Number("constructor")];</script>',
+    '<script>Number = function(x){ return x; }; document.body[Number("ownerDocument")];</script>',
+    '<script>Math.floor = function(x){ return x; }; document.body[Math.floor("ownerDocument")];</script>',
+    '<script>var Math = { floor: function(x){ return x; } }; document.body[Math.floor("ownerDocument")];</script>',
+    '<script>parseInt = function(x){ return x; }; []["map"][parseInt("constructor")];</script>',
+    '<script>const m = Math; m.floor = function(x){ return x; }; []["map"][Math.floor("constructor")];</script>',
+    '<script>Object.assign(Math, { floor: function(x){ return x; } }); []["map"][Math.floor("constructor")];</script>',
+    '<script>delete Math.floor; []["map"][Math.floor("constructor")];</script>',
+    '<script>let a = "a"; function init(){ return []["map"][a + "constructor"]; } a = ""; init();</script>',
+    '<script>let a = "a"; for (let i = 0; i < 2; i++) { const F = []["map"][a + "constructor"]; a = ""; }</script>',
+    '<script>let a = "con"; function getF(){ return []["map"][a]; } a += "structor"; getF();</script>',
+    '<script>let k = 0; function f(){ let m = k; return []["map"][m]; } k = "constructor"; f();</script>',
   ]) {
     assert.throws(() => sanitizeSimulationHtml(unsafe), `expected unsafe HTML rejected: ${unsafe}`);
   }
@@ -346,7 +373,7 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
   );
   assert.doesNotThrow(() =>
     sanitizeSimulationHtml(
-      `<div class="sim-wrap"><script>var arr = [10, 20, 30]; for (var i = 0; i < arr.length; i++) { var v = arr[i]; var next = arr[(i + 1) % arr.length]; } arr.forEach(function(item, rawIdx){ var idx = rawIdx | 0; var n = Number(rawIdx); arr[idx]; arr[Math.floor(n)]; });</script></div>`,
+      `<div class="sim-wrap"><script>var arr = [10, 20, 30]; for (var i = 0; i < arr.length; i++) { var v = arr[i]; var next = arr[(i + 1) % arr.length]; } arr.forEach(function(item, rawIdx){ var idx = rawIdx | 0; var n = Number(rawIdx); arr[idx]; arr[Math.floor(n)]; }); var safeN = 0; safeN ||= 1; arr[safeN];</script></div>`,
     ),
   );
 
