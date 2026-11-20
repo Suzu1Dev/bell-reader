@@ -222,17 +222,49 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     '<script>eval("alert(1)")</script>',
     '<script>(0, eval)("alert(1)")</script>',
     '<script>win\\u0064ow.open("https://evil.test")</script>',
+    // Iteration 5 bypass vectors (control-flow regex-after-')', aliasing, tagged templates, string concat, image-set, SVG href)
+    '<script>if (1) /"/; window/**/.open("https://evil.test")</script>',
+    '<script>if ((1)) /"/; window/**/.open("https://evil.test")</script>',
+    '<script>while (0) /"/; fetch/**/("/api/pages")</script>',
+    '<script>for (;;) /"/; window/**/.open("https://evil.test")</script>',
+    '<script>if (1) /"/; eval/**/("alert(1)")</script>',
+    '<script>if (1) /"/; import/**/("/api/pages")</script>',
+    '<script>const d = document; d.cookie</script>',
+    '<script>const s = self; s["open"]("https://evil.test")</script>',
+    '<script>const w = 0 || window; w.open("https://evil.test")</script>',
+    '<script>const w = true ? window : null; w.open("https://evil.test")</script>',
+    '<script>const w = (function(){ return window; })(); w.open("https://evil.test")</script>',
+    '<script>const f = frames; f[0].postMessage("x","*")</script>',
+    '<script>var { cookie } = (document);</script>',
+    '<script>var { open } = (top);</script>',
+    '<script>fetch`/api/pages`</script>',
+    '<script>Function`alert(1)`()</script>',
+    '<script>(1, eval)("alert(1)")</script>',
+    '<script>(0, fetch)("/api/pages")</script>',
+    '<script>const f = 0 || fetch; f("/api/pages")</script>',
+    '<script>[]["constr" + "uctor"]("alert(1)")()</script>',
+    '<script>location.href = "https://evil.test"</script>',
+    '<script>open("https://evil.test")</script>',
+    '<style>body{background-image:image-set("https://evil.test/a.png" 1x)}</style>',
+    "<div style=\"background-image:image-set('https://evil.test/a.png' 1x)\">hi</div>",
+    '<a href="data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' onload=\'alert(1)\'/>">go</a>',
+    '<svg><use href="data:image/svg+xml;utf8,<svg id=\'x\'/>#x"/></svg>',
   ]) {
     assert.throws(() => sanitizeSimulationHtml(unsafe), `expected unsafe HTML rejected: ${unsafe}`);
   }
 
   // Clean HTML with '>' inside quoted attribute or harmless data-* / SVG / JS patterns must still pass
   assert.doesNotThrow(() =>
-    sanitizeSimulationHtml('<div class="sim-wrap" title="a > b" data-note="onclick=1"><a href="#sec">ok</a></div>'),
+    sanitizeSimulationHtml('<div class="sim-wrap" title="a > b" data-note="onclick=1"><a href="#sec">ok</a><img src="data:image/svg+xml;utf8,<svg/>"/></div>'),
   );
   assert.doesNotThrow(() =>
     sanitizeSimulationHtml(
-      '<div class="sim-wrap"><svg viewBox="0 0 100 100"><animate attributeName="opacity" from="0" to="1" dur="1s"/><use href="#icon"/></svg><script>window.addEventListener("resize", function(){ var top = 10; var y = top; });</script></div>',
+      '<div class="sim-wrap"><svg viewBox="0 0 100 100"><animate attributeName="opacity" from="0" to="1" dur="1s"/><use href="#icon"/></svg><script>window.addEventListener("resize", function(){ var top = 10; var y = top; var half = (a + b) / 2; });</script></div>',
+    ),
+  );
+  assert.doesNotThrow(() =>
+    sanitizeSimulationHtml(
+      '<div class="sim-wrap" id="r"><script>var el = document.getElementById("r"); var d = document.createElement("div"); document.querySelectorAll("div"); var h = window.innerHeight; window.requestAnimationFrame(function(){ return (1 + 2) / 3; });</script></div>',
     ),
   );
   assert.doesNotThrow(() =>
@@ -244,8 +276,8 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     ),
   );
 
-  // CJK page/section ordinal markers like "第 1 頁" must not become bogus numeric parameters/quizzes
-  const ordSignals = extractPassageSignals(undefined, "第 1 頁\nFrame budget is 16.6ms");
+  // CJK and English page/section ordinal markers like "第 1 頁" / "Page 1" must not become bogus numeric parameters/quizzes
+  const ordSignals = extractPassageSignals(undefined, "第 1 頁\nPage 1\nSection 2\nFrame budget is 16.6ms");
   assert.equal(ordSignals.numbers.length, 1);
   assert.equal(ordSignals.numbers[0].value, 16.6);
   assert.equal(ordSignals.numbers[0].unit, "ms");
@@ -255,6 +287,19 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     pageTitle: "Page Header",
   });
   assert.ok(!ordOnlyStepper.checks[0].question.includes("「第」"));
+
+  const enOrdSignals = extractPassageSignals(undefined, "Page 1 Scheduler quantum=20ms");
+  assert.equal(enOrdSignals.numbers.length, 1);
+  assert.equal(enOrdSignals.numbers[0].label, "quantum");
+  assert.equal(enOrdSignals.numbers[0].value, 20);
+  assert.equal(enOrdSignals.numbers[0].unit, "ms");
+
+  const enOrdStepper = buildDeterministicStepper({
+    block: { id: "p-en-ord", kind: "paragraph", text: "Page 1 Scheduler quantum=20ms" },
+    pageTitle: "Scheduler Notes",
+  });
+  assert.ok(enOrdStepper.checks[0].question.includes("「quantum」"));
+  assert.ok(!enOrdStepper.checks[0].question.includes("數值「Page」"));
 
   // Zero-value numeric simulation + stepper edge case & SVG escaping
   const zeroSim = buildDeterministicSimulation({

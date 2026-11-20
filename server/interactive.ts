@@ -59,24 +59,28 @@ const URL_ATTRS = new Set(["src", "href", "action", "poster", "formaction", "xli
 
 const JS_FORBIDDEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   {
-    re: /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)(?:\s*\?\.)?\s*(?:\(|\[|\.\s*(?:call|apply|bind)\b)/i,
+    re: /\bnew\s+(?:XMLHttpRequest|WebSocket|EventSource)\b|\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)(?:\s*\?\.)?\s*(?:\(|`|\[|\.\s*(?:call|apply|bind)\b)/i,
     reason: "禁止網路連線 API",
   },
   {
-    re: /\b(?:document(?:\s*\?\.\s*|\s*\.\s*)cookie|localStorage|sessionStorage|indexedDB)\b/i,
-    reason: "禁止存取儲存體或 Cookie",
+    re: /\b(?:localStorage|sessionStorage|indexedDB)\b/i,
+    reason: "禁止存取瀏覽器儲存體",
   },
   {
-    re: /\b(?:window|self|globalThis)(?:\s*\?\.\s*|\s*\.\s*)(?:open|parent|top|frames|location|localStorage|sessionStorage|indexedDB|document|fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|eval|Function)\b/i,
-    reason: "禁止存取受限全域視窗或網路屬性",
+    re: /(?<![.\w$])document\b(?!\s*\.\s*(?:getElementById|querySelector|querySelectorAll|createElement|createElementNS|createTextNode|body|documentElement)\b)/,
+    reason: "禁止存取受限的 document 屬性或別名",
   },
   {
-    re: /\b(?:parent|top|frames)(?:\s*\?\.\s*|\s*\.\s*|\s*\[\s*)/i,
+    re: /(?<![.\w$])(?:window|self|globalThis|frames)\b(?!\s*\.\s*(?:addEventListener|removeEventListener|requestAnimationFrame|cancelAnimationFrame|getComputedStyle|matchMedia|innerWidth|innerHeight|devicePixelRatio)\b)/,
+    reason: "禁止存取受限全域視窗或別名",
+  },
+  {
+    re: /\b(?:parent|top)(?:\s*\?\.\s*|\s*\.\s*|\s*\[)/i,
     reason: "禁止跨框存取上層或子框視窗",
   },
   {
-    re: /\b(?:window|self|globalThis|parent|top|document|frames)(?:\s*\?\.\s*|\s*)\[/i,
-    reason: "禁止以中括號動態存取全域物件",
+    re: /(?<![.\w$])open(?:\s*\?\.)?\s*(?:\(|`)|\blocation(?:\s*\?\.)?\s*(?:=|\.\s*(?:href|replace|assign|reload|search|hash|origin|pathname)\b|\[)/,
+    reason: "禁止視窗開啟或頁面導向操作",
   },
   {
     re: /\bReflect\s*(?:\?\.\s*|\.\s*|\[)/,
@@ -84,7 +88,7 @@ const JS_FORBIDDEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   },
   {
     // Case-sensitive so encodePayloadForScript's lowercase `function(c)` stays allowed
-    re: /\bnew\s+Function\b|\bFunction\s*\(|\beval\s*(?:\?\.)?\s*\(|\(\s*0\s*,\s*eval\s*\)/,
+    re: /\bnew\s+Function\b|\bFunction\s*(?:\(|`)|\beval\s*(?:\?\.)?\s*(?:\(|`)/,
     reason: "禁止動態執行的 eval 或 Function 建構子",
   },
   {
@@ -92,11 +96,11 @@ const JS_FORBIDDEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
     reason: "禁止動態模組匯入",
   },
   {
-    re: /(?:\?\.\s*|\.\s*)constructor\b|\[\s*["'`]constructor["'`]\s*\]/,
+    re: /(?:\?\.\s*|\.\s*)constructor\b|\[\s*\(?\s*["'`]constructor["'`]\s*\)?\s*\]/,
     reason: "禁止存取 constructor 原型鏈",
   },
   {
-    re: /\}\s*=\s*(?:window|self|globalThis|parent|top|document|frames)\b|(?:=|,|\()\s*(?:window|globalThis)\b|=\s*(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|eval|Function)\b|\[\s*(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|eval|Function)\s*\]/,
+    re: /\}\s*=\s*\(?\s*(?:window|self|globalThis|parent|top|document|frames)\b|(?:=>|=|,|\(|\|\||&&|\?\?|\?|:|\breturn\s+|\[)\s*(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|eval|Function)\b/,
     reason: "禁止解構或別名參照受限全域物件與網路 API",
   },
   {
@@ -122,9 +126,16 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
   "do",
 ]);
 
-function isAllowedSimUrl(raw: string): boolean {
+const CONDITION_KEYWORDS = new Set(["if", "while", "for", "with"]);
+
+const NAVIGABLE_URL_ATTRS = new Set(["href", "xlink:href", "action", "formaction"]);
+
+function isAllowedSimUrl(raw: string, attrName?: string): boolean {
   const normalized = raw.replace(/[\u0000-\u0020]+/g, "");
   if (!normalized || normalized.startsWith("#")) return true;
+  if (attrName && NAVIGABLE_URL_ATTRS.has(attrName)) {
+    return /^data:image\/(?:png|jpeg|gif|webp);/i.test(normalized);
+  }
   return /^data:image\/(?:png|jpeg|gif|webp|svg\+xml);/i.test(normalized);
 }
 
@@ -160,6 +171,9 @@ function checkCss(rawCss: string): void {
   if (/@import\b/i.test(normalized)) {
     throw new AppError(422, "互動模擬未通過安全檢查：禁止外部樣式匯入。");
   }
+  if (/(?:-webkit-)?image-set\s*\(/i.test(normalized)) {
+    throw new AppError(422, "互動模擬未通過安全檢查：禁止外部背景網址。");
+  }
   const urlRe = /url\s*\(\s*["']?([^)"']+)/gi;
   let m: RegExpExecArray | null;
   while ((m = urlRe.exec(normalized))) {
@@ -169,12 +183,28 @@ function checkCss(rawCss: string): void {
   }
 }
 
+function foldStringConcat(code: string): string {
+  let cur = code;
+  const re = /(["'])((?:\\.|(?!\1)[^\\\r\n])*)\1\s*\+\s*(["'])((?:\\.|(?!\3)[^\\\r\n])*)\3/g;
+  for (let pass = 0; pass < 8; pass += 1) {
+    const next = cur.replace(re, (_m, q1: string, s1: string, q2: string, s2: string) => {
+      const rhs = q1 === q2 ? s2 : s2.replace(new RegExp(q1, "g"), `\\${q1}`);
+      return `${q1}${s1}${rhs}${q1}`;
+    });
+    if (next === cur) break;
+    cur = next;
+  }
+  return cur;
+}
+
 function stripJsComments(code: string): string {
   const out: string[] = [];
   const templateBraceStack: number[] = [];
+  const parenIsConditionStack: boolean[] = [];
   let i = 0;
   const n = code.length;
   let canStartRegex = true;
+  let lastWord = "";
 
   const readUnicodeEscape = (): string | null => {
     if (code[i] !== "\\" || code[i + 1] !== "u") return null;
@@ -207,6 +237,7 @@ function stripJsComments(code: string): string {
         out.push("`");
         i += 1;
         canStartRegex = false;
+        lastWord = "";
         return;
       }
       if (c === "$" && code[i + 1] === "{") {
@@ -214,6 +245,7 @@ function stripJsComments(code: string): string {
         i += 2;
         templateBraceStack.push(0);
         canStartRegex = true;
+        lastWord = "";
         return;
       }
       out.push(c);
@@ -239,6 +271,7 @@ function stripJsComments(code: string): string {
         if (c === quote) break;
       }
       canStartRegex = false;
+      lastWord = "";
       continue;
     }
     if (ch === "`") {
@@ -259,13 +292,15 @@ function stripJsComments(code: string): string {
       out.push("{");
       i += 1;
       canStartRegex = true;
+      lastWord = "";
       continue;
     }
     if (ch === "}") {
       if (templateBraceStack.length > 0) templateBraceStack[templateBraceStack.length - 1] -= 1;
       out.push("}");
       i += 1;
-      canStartRegex = false;
+      canStartRegex = true;
+      lastWord = "";
       continue;
     }
     if (ch === "/" && code[i + 1] === "/") {
@@ -314,6 +349,7 @@ function stripJsComments(code: string): string {
         i += 1;
       }
       canStartRegex = false;
+      lastWord = "";
       continue;
     }
     if (/\s/.test(ch)) {
@@ -336,10 +372,12 @@ function stripJsComments(code: string): string {
       if (word) {
         out.push(word);
         canStartRegex = REGEX_PRECEDING_KEYWORDS.has(word);
+        lastWord = word;
       } else {
         out.push(ch);
         i += 1;
         canStartRegex = true;
+        lastWord = "";
       }
       continue;
     }
@@ -349,23 +387,42 @@ function stripJsComments(code: string): string {
         i += 1;
       }
       canStartRegex = false;
+      lastWord = "";
       continue;
     }
-    if (ch === ")" || ch === "]") {
-      out.push(ch);
+    if (ch === "(") {
+      parenIsConditionStack.push(CONDITION_KEYWORDS.has(lastWord));
+      out.push("(");
+      i += 1;
+      canStartRegex = true;
+      lastWord = "";
+      continue;
+    }
+    if (ch === ")") {
+      out.push(")");
+      i += 1;
+      canStartRegex = parenIsConditionStack.pop() ?? false;
+      lastWord = "";
+      continue;
+    }
+    if (ch === "]") {
+      out.push("]");
       i += 1;
       canStartRegex = false;
+      lastWord = "";
       continue;
     }
     if ((ch === "+" || ch === "-") && code[i + 1] === ch) {
       out.push(ch, ch);
       i += 2;
       canStartRegex = false;
+      lastWord = "";
       continue;
     }
     out.push(ch);
     i += 1;
     canStartRegex = true;
+    lastWord = "";
   }
   return out.join("");
 }
@@ -433,7 +490,7 @@ export function sanitizeSimulationHtml(rawHtml: string): string {
         checkSrcsetAttr(attrVal);
       }
       if (URL_ATTRS.has(attrName) || URL_ATTRS.has(attrName.replace(/^xlink:/, ""))) {
-        if (!isAllowedSimUrl(attrVal)) {
+        if (!isAllowedSimUrl(attrVal, attrName)) {
           throw new AppError(422, "互動模擬未通過安全檢查：禁止外部網路資源連結。");
         }
       }
@@ -443,7 +500,8 @@ export function sanitizeSimulationHtml(rawHtml: string): string {
     }
     if (tagName === "script") {
       const rawScript = $(el).text();
-      const candidates = [rawScript, stripJsComments(rawScript)];
+      const stripped = stripJsComments(rawScript);
+      const candidates = [rawScript, stripped, foldStringConcat(stripped)];
       for (const candidate of candidates) {
         for (const { re, reason } of JS_FORBIDDEN_PATTERNS) {
           if (re.test(candidate)) {
@@ -607,7 +665,10 @@ export function extractPassageSignals(
   const numRe =
     /([A-Za-z\u4e00-\u9fff_]{1,14})?\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*(ms|us|ns|s|fps|Hz|kHz|MHz|GHz|KB|MB|GB|%|px|deg|rad|位元|毫秒|秒|幀|次)?/g;
   let nm: RegExpExecArray | null;
-  const numSource = (primaryText || sourceText).replace(/第\s*\d+\s*[頁章節篇講課條項]/g, " ");
+  const numSource = (primaryText || sourceText).replace(
+    /第\s*\d+\s*[頁章節篇講課條項]|\b(?:Page|Section|Chapter|Part|Fig\.?)\s+\d+\b/gi,
+    " ",
+  );
   while ((nm = numRe.exec(numSource)) && numbers.length < 4) {
     const val = Number(nm[2]);
     if (!Number.isFinite(val)) continue;
