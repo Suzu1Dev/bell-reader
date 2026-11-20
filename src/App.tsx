@@ -274,7 +274,8 @@ export default function App() {
   const [translationMode, setTranslationMode] = useState<"original" | "bilingual" | "translated">("original");
   const [pdfViewMode, setPdfViewMode] = useState<"split" | "notes" | "pdf">("split");
   const [splitPct, setSplitPct] = useState<number>(() => {
-    const raw = Number(localStorage.getItem("bell.reader.splitPct"));
+    const saved = localStorage.getItem("bell.reader.splitPct");
+    const raw = saved && saved.trim() ? Number(saved) : NaN;
     return Number.isFinite(raw) ? Math.max(28, Math.min(72, raw)) : 46;
   });
   const [draggingSplit, setDraggingSplit] = useState(false);
@@ -325,37 +326,44 @@ export default function App() {
     localStorage.setItem("bell.reader.splitPct", String(splitPct));
   }, [splitPct]);
 
+  const closeOverlays = useCallback((keep?: "more" | "density" | "interactive" | "outline" | "sidebar") => {
+    if (keep !== "more") setMoreMenuOpen(false);
+    if (keep !== "density") setDensityMenuOpen(false);
+    if (keep !== "interactive") setInteractiveMenuOpen(false);
+    if (keep !== "outline") setOutlineOpen(false);
+    if (keep !== "sidebar") setMobileSidebarOpen(false);
+  }, []);
+
   useEffect(() => {
-    if (!moreMenuOpen && !densityMenuOpen && !interactiveMenuOpen) return;
+    if (!moreMenuOpen && !densityMenuOpen && !interactiveMenuOpen && !outlineOpen && !mobileSidebarOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setMoreMenuOpen(false);
-        setDensityMenuOpen(false);
-        setInteractiveMenuOpen(false);
+        closeOverlays();
       }
     };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [moreMenuOpen, densityMenuOpen, interactiveMenuOpen, outlineOpen, mobileSidebarOpen, closeOverlays]);
+
+  useEffect(() => {
+    if (!moreMenuOpen && !densityMenuOpen && !interactiveMenuOpen) return;
     const onClick = () => {
       setMoreMenuOpen(false);
       setDensityMenuOpen(false);
       setInteractiveMenuOpen(false);
     };
-    window.addEventListener("keydown", onKey);
     window.addEventListener("click", onClick);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("click", onClick);
-    };
+    return () => window.removeEventListener("click", onClick);
   }, [moreMenuOpen, densityMenuOpen, interactiveMenuOpen]);
 
   useEffect(() => {
     const onHash = () => {
       setHash(window.location.hash || "#/");
-      setMoreMenuOpen(false);
-      setMobileSidebarOpen(false);
+      closeOverlays();
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, []);
+  }, [closeOverlays]);
 
   const route = useMemo(() => parseRoute(hash), [hash]);
 
@@ -565,7 +573,7 @@ export default function App() {
 
   const handleAnnotatePage = async (densityOverride?: AnnotationDensity) => {
     if (!activePage || annotating) return;
-    setDensityMenuOpen(false);
+    closeOverlays();
     const chosenDensity = densityOverride ?? currentDensity;
     const controller = new AbortController();
     annotateAbortRef.current = controller;
@@ -727,6 +735,7 @@ export default function App() {
   }, [activePage, isTranslatedView]);
 
   const activeHasPdf = Boolean(activePage && (activePage.hasPdf || activePage.sourceKind === "pdf"));
+  const hasMobileSubbar = Boolean(route.kind === "page" && activePage && (activeHasPdf || activePage.translatedBlocks));
   const outlineHeadings = useMemo(
     () => (activePage ? activePage.blocks.filter((b) => b.kind === "heading") : []),
     [activePage],
@@ -879,6 +888,7 @@ export default function App() {
 
   const handleToggleSidebar = () => {
     if (window.matchMedia("(max-width: 900px)").matches) {
+      closeOverlays("sidebar");
       setMobileSidebarOpen((v) => !v);
     } else {
       setSidebarCollapsed((v) => !v);
@@ -920,7 +930,10 @@ export default function App() {
             type="button"
             className="suite-brand-btn"
             aria-label="切換 BELL 產品"
-            onClick={() => setSwitcherOpen(true)}
+            onClick={() => {
+              closeOverlays();
+              setSwitcherOpen(true);
+            }}
           >
             <span className="brand-tile" aria-hidden="true">
               <Highlighter size={14} />
@@ -1053,7 +1066,10 @@ export default function App() {
           <button
             type="button"
             className="nav-row sidebar-action-row"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => {
+              closeOverlays();
+              setSettingsOpen(true);
+            }}
           >
             <Settings size={14} aria-hidden="true" />
             <span>模型與設定</span>
@@ -1061,7 +1077,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="app-main">
+      <main className={`app-main ${hasMobileSubbar ? "has-view-pills" : ""}`}>
         <header className="main-topbar">
           <div className="main-topbar-left">
             <button
@@ -1209,8 +1225,7 @@ export default function App() {
                       disabled={interactiveBusy}
                       aria-expanded={interactiveMenuOpen}
                       onClick={() => {
-                        setMoreMenuOpen(false);
-                        setDensityMenuOpen(false);
+                        closeOverlays("interactive");
                         setInteractiveMenuOpen((v) => !v);
                       }}
                       title="為目前文章建立可操作的互動模擬或概念步進測驗"
@@ -1284,7 +1299,10 @@ export default function App() {
                     type="button"
                     className={`icon-ghost-btn ${outlineOpen ? "is-active" : ""}`}
                     aria-pressed={outlineOpen}
-                    onClick={() => setOutlineOpen((v) => !v)}
+                    onClick={() => {
+                      closeOverlays("outline");
+                      setOutlineOpen((v) => !v);
+                    }}
                     title="開啟大綱與閱讀筆跡導覽"
                   >
                     <ListTree size={14} aria-hidden="true" />
@@ -1332,8 +1350,7 @@ export default function App() {
                       aria-label="更多頁面操作"
                       aria-expanded={moreMenuOpen}
                       onClick={() => {
-                        setInteractiveMenuOpen(false);
-                        setDensityMenuOpen(false);
+                        closeOverlays("more");
                         setMoreMenuOpen((v) => !v);
                       }}
                     >
@@ -1457,8 +1474,7 @@ export default function App() {
                       aria-label="選擇標註數量與頻率"
                       aria-expanded={densityMenuOpen}
                       onClick={() => {
-                        setInteractiveMenuOpen(false);
-                        setMoreMenuOpen(false);
+                        closeOverlays("density");
                         setDensityMenuOpen((v) => !v);
                       }}
                     >

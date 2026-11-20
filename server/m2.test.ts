@@ -249,6 +249,37 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     "<div style=\"background-image:image-set('https://evil.test/a.png' 1x)\">hi</div>",
     '<a href="data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' onload=\'alert(1)\'/>">go</a>',
     '<svg><use href="data:image/svg+xml;utf8,<svg id=\'x\'/>#x"/></svg>',
+    // Iteration 6 AST & mXSS regression vectors
+    '<script>{} / 2; fetch("/api/pages")</script>',
+    '<script>function(){} / 2; fetch("/api/pages")</script>',
+    '<script>of / 2; fetch("/api/pages")</script>',
+    '<script>await / 2; fetch("/api/pages")</script>',
+    '<script>document.body.ownerDocument.defaultView.open("https://evil.test")</script>',
+    '<script>document.documentElement.parentNode.cookie</script>',
+    '<script>Object.getPrototypeOf([])</script>',
+    '<script>parent.postMessage("x", "*")</script>',
+    '<script>top.postMessage("x", "*")</script>',
+    '<script>var top = 10; top.postMessage("x", "*")</script>',
+    '<script>location.assign("https://evil.test")</script>',
+    '<script>const obj = { fetch }; obj.fetch("/api/pages")</script>',
+    '<script>const { constructor: F } = [].filter; F("alert(1)")()</script>',
+    '<script>const { fetch } = this</script>',
+    '<script>const { ["\\x63onstructor"]: F } = [].filter</script>',
+    '<script>[]["\\x63onstructor"]("alert(1)")()</script>',
+    '<script>[][`con${""}structor`]("alert(1)")()</script>',
+    '<script>const k = "con" + "structor"; [][k]("alert(1)")()</script>',
+    '<script>let k; k = "constructor"; [][k]("alert(1)")()</script>',
+    '<script>let k = "length"; if (1) { k = "constructor"; } else { k = "length"; } [][k]</script>',
+    '<script>[][["con","structor"].join("")]("alert(1)")()</script>',
+    '<script>setTimeout("alert(1)", 0)</script>',
+    '<script>this.fetch("/api/pages")</script>',
+    '<script>class A { m() { return (function(){ return this; })(); } }</script>',
+    '<script>ev\\u0061l("1")</script>',
+    '<script>import.meta</script>',
+    '<script>with ({}) {}</script>',
+    '<script type="module">fetch("/api/pages")</script>',
+    '<math><mtext><table><mglyph><style><!--</style><img title="--><img src=x onerror=alert(1)>">',
+    '<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>',
   ]) {
     assert.throws(() => sanitizeSimulationHtml(unsafe), `expected unsafe HTML rejected: ${unsafe}`);
   }
@@ -264,6 +295,11 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
   );
   assert.doesNotThrow(() =>
     sanitizeSimulationHtml(
+      '<div class="sim-wrap"><script>let top = 10; let y = top; var particle = { location: { x: 1, y: 2 } }; particle.location = { x: 3, y: 4 }; const key = "x"; const v = particle.location[key]; setTimeout(function(){ return v + y; }, 16);</script></div>',
+    ),
+  );
+  assert.doesNotThrow(() =>
+    sanitizeSimulationHtml(
       '<div class="sim-wrap" id="r"><script>var el = document.getElementById("r"); var d = document.createElement("div"); document.querySelectorAll("div"); var h = window.innerHeight; window.requestAnimationFrame(function(){ return (1 + 2) / 3; });</script></div>',
     ),
   );
@@ -272,7 +308,7 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
   );
   assert.doesNotThrow(() =>
     sanitizeSimulationHtml(
-      `<div class="sim-wrap"><canvas id="c"></canvas><script>// lead comment\n/* block */\nclass Particle { constructor(x, y) { this.x = x; this.y = y; } }\nvar label = "Click to fetch next step // Reflect on result";\nvar s = String(label).replace(/"/g, "&quot;");\nvar b = atob("AA//BB==");\n</script></div>`,
+      `<div class="sim-wrap"><canvas id="c"></canvas><script>// lead comment\n/* block */\nclass Particle { constructor(x, y) { this.x = x; this.y = y; this.location = { x, y }; } }\nvar label = "Click to fetch next step // Reflect on result";\nvar s = String(label).replace(/"/g, "&quot;");\nvar b = atob("AA//BB==");\n</script></div>`,
     ),
   );
 
@@ -300,6 +336,54 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
   });
   assert.ok(enOrdStepper.checks[0].question.includes("「quantum」"));
   assert.ok(!enOrdStepper.checks[0].question.includes("數值「Page」"));
+
+  // Decimal numbers stay intact in sentence extraction; stop-words are not parameter labels; quote+block deduplicate by value+unit
+  const budgetBlock = {
+    id: "p-budget",
+    kind: "paragraph" as const,
+    text: "Frame budget is 16.6ms at 60Hz with 25ms max task latency",
+  };
+  const budgetSignals = extractPassageSignals(budgetBlock, "16.6ms at 60Hz");
+  assert.deepEqual(budgetSignals.numbers, [
+    { label: "參數 (ms)", value: 16.6, unit: "ms" },
+    { label: "參數 (Hz)", value: 60, unit: "Hz" },
+    { label: "參數 (ms)", value: 25, unit: "ms" },
+  ]);
+  assert.equal(budgetSignals.sentences[0], "16.6ms at 60Hz");
+  assert.ok(!budgetSignals.sentences.some((s) => s.startsWith("6ms")));
+  const budgetSim = buildDeterministicSimulation({ block: budgetBlock, quote: "16.6ms at 60Hz", pageTitle: "Frame Budget" });
+  assert.ok(!budgetSim.summary.includes("at 60Hz") && !budgetSim.summary.includes("is 16.6ms"));
+  assert.ok(decodeSimPayload(budgetSim.html).includes('"formula":"16.6ms at 60Hz"'));
+
+  // Explicit technical parameters survive stop-word filtering while code-condition literals like if (1) / while (0) do not become sliders
+  const techSignals = extractPassageSignals(
+    undefined,
+    "System latency=45ms, frame budget 16.6ms at 60Hz, max 25ms, burst 42ms, target 120 fps",
+  );
+  assert.deepEqual(
+    techSignals.numbers.map((n) => [n.label, n.value, n.unit]),
+    [
+      ["latency", 45, "ms"],
+      ["budget", 16.6, "ms"],
+      ["參數 (Hz)", 60, "Hz"],
+      ["參數 (ms)", 25, "ms"],
+    ],
+  );
+  const fpsSignals = extractPassageSignals(undefined, "burst 42ms and target 120 fps");
+  assert.deepEqual(fpsSignals.numbers, [
+    { label: "burst", value: 42, unit: "ms" },
+    { label: "target", value: 120, unit: "fps" },
+  ]);
+  const condOrdSignals = extractPassageSignals(
+    undefined,
+    'On Page 1 of Section 2 and Chapter 3, Part 4, Fig. 5, 第 1 頁 explains if (1) /"/; while (0) fetch -> document.cookie',
+  );
+  assert.deepEqual(condOrdSignals.numbers, []);
+  const condOrdStepper = buildDeterministicStepper({
+    block: { id: "p-cond-ord", kind: "paragraph", text: 'Page 1 Section 2 if (1) /"/; fetch -> document.cookie' },
+    pageTitle: "Control Flow",
+  });
+  assert.ok(!condOrdStepper.checks[0].question.includes("關鍵數值"));
 
   // Zero-value numeric simulation + stepper edge case & SVG escaping
   const zeroSim = buildDeterministicSimulation({
@@ -656,6 +740,37 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
     assert.equal(jsFrameRes.status, 200);
     const jsFrameHtml = await jsFrameRes.text();
     assert.ok(decodeSimPayload(jsFrameHtml).includes("fetch('/api/items')"));
+
+    // Translate fails cleanly with 503 when AI is unconfigured without corrupting page state
+    const prevApiKey = process.env.AI_API_KEY;
+    delete process.env.AI_API_KEY;
+    try {
+      const noAiApp = createApp({ store, dataDir: tempDataDir });
+      const noAiSrv = await listenLocal(noAiApp);
+      try {
+        await fetch(`${noAiSrv.url}/api/settings`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ provider: "api" }),
+        });
+        const offlineTrRes = await fetch(`${noAiSrv.url}/api/pages/${page.id}/translate`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+        });
+        assert.equal(offlineTrRes.status, 503);
+        const offlineTrBody = (await offlineTrRes.json()) as { error?: string };
+        assert.ok(offlineTrBody.error && offlineTrBody.error.includes("AI_API_KEY"));
+        const intactPageRes = await fetch(`${noAiSrv.url}/api/pages/${page.id}`);
+        assert.equal(intactPageRes.status, 200);
+        const intactPage = (await intactPageRes.json()) as { id: string; translatedBlocks?: unknown };
+        assert.equal(intactPage.id, page.id);
+        assert.equal(intactPage.translatedBlocks, undefined);
+      } finally {
+        await noAiSrv.close();
+      }
+    } finally {
+      if (prevApiKey !== undefined) process.env.AI_API_KEY = prevApiKey;
+    }
 
     // 4. Suite Today strict schema check
     const todayRes = await fetch(`${srv.url}/api/suite/today`);

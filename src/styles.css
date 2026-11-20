@@ -986,6 +986,10 @@ select:focus-visible {
   color: var(--text-3);
   padding-left: 10px;
   border-left: 1px solid var(--line);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .reader-quiet-group {
@@ -1394,6 +1398,7 @@ select:focus-visible {
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .explain-matches-bar {
@@ -1437,6 +1442,9 @@ select:focus-visible {
 .ink-overlay-svg {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
   pointer-events: none;
   z-index: 2;
   mix-blend-mode: var(--highlighter-blend);
@@ -1445,6 +1453,9 @@ select:focus-visible {
 .ink-image-overlay-svg {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
   pointer-events: none;
   z-index: 5;
 }
@@ -1955,6 +1966,7 @@ mark.ink-text-hit.is-active {
 .selection-pen-bar {
   position: absolute;
   z-index: 30;
+  max-width: calc(100% - 16px);
   background: var(--overlay);
   border: 1px solid var(--line-2);
   border-radius: var(--radius-md);
@@ -1968,6 +1980,7 @@ mark.ink-text-hit.is-active {
 .pen-bar-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -2497,33 +2510,60 @@ mark.ink-text-hit.is-active {
 @media (max-width: 640px) {
   .app-main {
     min-width: 0;
-    overflow-x: clip;
   }
 
   .main-topbar {
-    gap: 6px;
+    height: auto;
+    min-height: 48px;
+    flex-wrap: wrap;
+    padding: 7px 10px;
+    gap: 6px 4px;
+  }
+
+  .main-topbar-left {
+    order: 1;
+    margin-right: auto;
+    min-width: 0;
+  }
+
+  .main-topbar-right,
+  .reader-quiet-group {
+    display: contents;
+  }
+
+  .main-topbar-right > *,
+  .reader-quiet-group > button,
+  .reader-quiet-group > .more-menu-wrap {
+    order: 2;
+  }
+
+  .ai-annotate-wrap {
+    order: 3;
+    flex-shrink: 0;
+  }
+
+  .app-main.has-view-pills .main-topbar::after {
+    content: "";
+    order: 4;
+    flex-basis: 100%;
+    height: 0;
+  }
+
+  .main-topbar .segmented-pill {
+    order: 5;
+    flex-shrink: 0;
+  }
+
+  .search-input.is-topbar {
+    width: min(170px, 44vw);
   }
 
   .reader-topic-label,
-  .icon-ghost-btn.is-explain-link {
-    display: none;
-  }
-
-  .reader-quiet-group {
-    gap: 2px;
-  }
-
+  .icon-ghost-btn.is-explain-link,
+  .folder-select-wrap.is-compact,
+  .ink-rhythm-meter,
   .icon-ghost-btn span {
     display: none;
-  }
-
-  .folder-select-wrap.is-compact {
-    max-width: 68px;
-    padding: 0 6px;
-  }
-
-  .folder-select-wrap.is-compact select {
-    max-width: 40px;
   }
 
   .icon-ghost-btn {
@@ -3016,6 +3056,7 @@ mark.ink-text-hit.is-active {
   background: var(--reader-tint);
   color: var(--reader-text);
   font-size: 11px;
+  line-height: 1.35;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -3023,6 +3064,7 @@ mark.ink-text-hit.is-active {
 .interactive-card-title {
   margin: 0;
   font-size: 13.5px;
+  line-height: 1.4;
   font-weight: 600;
   color: var(--text);
   min-width: 0;
@@ -3033,7 +3075,8 @@ mark.ink-text-hit.is-active {
 
 .interactive-source-pill {
   font-size: 10.5px;
-  padding: 1px 6px;
+  line-height: 1.35;
+  padding: 2px 6px;
   border-radius: 999px;
   background: var(--raised-2);
   border: 1px solid var(--line);
@@ -3140,6 +3183,7 @@ mark.ink-text-hit.is-active {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 6px;
   font-size: 13px;
@@ -3152,6 +3196,8 @@ mark.ink-text-hit.is-active {
   border-radius: var(--radius-xs);
   background: var(--reader-tint);
   color: var(--reader-text);
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .stepper-detail {
@@ -3402,28 +3448,6 @@ mark.ink-text-hit.is-active {
 }
 
 @media (max-width: 640px) {
-  .main-topbar {
-    gap: 6px;
-  }
-
-  .main-topbar-right {
-    flex: 1;
-    min-width: 0;
-    justify-content: safe flex-end;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .main-topbar-right::-webkit-scrollbar {
-    display: none;
-  }
-
-  .reader-quiet-group,
-  .segmented-pill,
-  .ai-annotate-wrap {
-    flex-shrink: 0;
-  }
-
   .interactive-popover,
   .more-popover,
   .density-popover {
@@ -3435,26 +3459,62 @@ mark.ink-text-hit.is-active {
     z-index: 60;
   }
 
-  .folder-select-wrap.is-compact {
-    display: none;
+  .app-main.has-view-pills .interactive-popover,
+  .app-main.has-view-pills .more-popover,
+  .app-main.has-view-pills .density-popover {
+    top: 90px;
   }
 
-  .ink-rhythm-meter {
-    display: none;
+  .app-main.has-view-pills .reader-outline-drawer {
+    top: 94px;
+  }
+
+  .reader-view-wrap.is-split {
+    padding: 14px 12px 48px;
+  }
+
+  .ink-stage.is-compact {
+    padding: 18px 14px 36px;
+  }
+
+  .interactive-card-head {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .interactive-action-btn {
+    padding: 0 6px;
+    font-size: 11px;
   }
 
   .interactive-card-title-wrap {
-    flex-wrap: wrap;
+    display: contents;
+  }
+
+  .interactive-kind-badge {
+    order: 1;
+  }
+
+  .interactive-source-pill {
+    order: 2;
+  }
+
+  .interactive-card-actions {
+    order: 3;
+    margin-left: auto;
   }
 
   .interactive-card-title {
+    order: 4;
     flex-basis: 100%;
-    white-space: normal;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .segmented-pill-btn {
-    padding: 0 6px;
-    font-size: 11px;
+    padding: 0 7px;
+    font-size: 11.5px;
   }
 
   .bilingual-block-pair {

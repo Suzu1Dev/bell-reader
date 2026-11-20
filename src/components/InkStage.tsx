@@ -684,7 +684,6 @@ export default function InkStage({
   const [paperSpan, setPaperSpan] = useState<{ left: number; width: number }>({ left: 210, width: 620 });
   const [noteHeights, setNoteHeights] = useState<Record<string, number>>({});
   const [noteBoxes, setNoteBoxes] = useState<Record<string, BoxRect>>({});
-  const [stageSize, setStageSize] = useState<{ width: number; height: number }>({ width: 1060, height: 600 });
 
   const [selection, setSelection] = useState<PendingSelection | null>(null);
   const [penStyle, setPenStyle] = useState<InkStyle>("highlight");
@@ -882,14 +881,10 @@ export default function InkStage({
       }
     }
 
-    const nextWidth = Math.max(stageEl.scrollWidth, stageRect.width);
-    const nextHeight = Math.max(stageEl.scrollHeight, stageRect.height);
-
     setPaperSpan({ left: pLeft, width: pWidth });
     setMeasured(nextMeasured);
     setNoteHeights(heights);
     setNoteBoxes(boxes);
-    setStageSize({ width: nextWidth, height: nextHeight });
   }, [page.annotations, blockKindById]);
 
   useLayoutEffect(() => {
@@ -1407,8 +1402,6 @@ export default function InkStage({
       {showInk ? (
         <svg
           className="ink-overlay-svg"
-          width={stageSize.width}
-          height={Math.max(stageSize.height, railMinHeight)}
           aria-hidden="true"
         >
           {measured.filter((m) => m.blockKind !== "image").map((m) => {
@@ -1484,8 +1477,6 @@ export default function InkStage({
       {showInk || selection?.isImage ? (
         <svg
           className="ink-image-overlay-svg"
-          width={stageSize.width}
-          height={Math.max(stageSize.height, railMinHeight)}
           aria-hidden="true"
         >
           {showInk

@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import ts from "typescript";
 import { z } from "zod";
 import type {
   InteractiveBlockKind,
@@ -53,80 +54,116 @@ const FORBIDDEN_TAGS = new Set([
   "form",
   "noscript",
   "template",
+  "math",
+  "mglyph",
+  "malignmark",
 ]);
 
 const URL_ATTRS = new Set(["src", "href", "action", "poster", "formaction", "xlink:href", "data", "background"]);
 
-const JS_FORBIDDEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
-  {
-    re: /\bnew\s+(?:XMLHttpRequest|WebSocket|EventSource)\b|\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)(?:\s*\?\.)?\s*(?:\(|`|\[|\.\s*(?:call|apply|bind)\b)/i,
-    reason: "禁止網路連線 API",
-  },
-  {
-    re: /\b(?:localStorage|sessionStorage|indexedDB)\b/i,
-    reason: "禁止存取瀏覽器儲存體",
-  },
-  {
-    re: /(?<![.\w$])document\b(?!\s*\.\s*(?:getElementById|querySelector|querySelectorAll|createElement|createElementNS|createTextNode|body|documentElement)\b)/,
-    reason: "禁止存取受限的 document 屬性或別名",
-  },
-  {
-    re: /(?<![.\w$])(?:window|self|globalThis|frames)\b(?!\s*\.\s*(?:addEventListener|removeEventListener|requestAnimationFrame|cancelAnimationFrame|getComputedStyle|matchMedia|innerWidth|innerHeight|devicePixelRatio)\b)/,
-    reason: "禁止存取受限全域視窗或別名",
-  },
-  {
-    re: /\b(?:parent|top)(?:\s*\?\.\s*|\s*\.\s*|\s*\[)/i,
-    reason: "禁止跨框存取上層或子框視窗",
-  },
-  {
-    re: /(?<![.\w$])open(?:\s*\?\.)?\s*(?:\(|`)|\blocation(?:\s*\?\.)?\s*(?:=|\.\s*(?:href|replace|assign|reload|search|hash|origin|pathname)\b|\[)/,
-    reason: "禁止視窗開啟或頁面導向操作",
-  },
-  {
-    re: /\bReflect\s*(?:\?\.\s*|\.\s*|\[)/,
-    reason: "禁止透過 Reflect 動態存取物件屬性",
-  },
-  {
-    // Case-sensitive so encodePayloadForScript's lowercase `function(c)` stays allowed
-    re: /\bnew\s+Function\b|\bFunction\s*(?:\(|`)|\beval\s*(?:\?\.)?\s*(?:\(|`)/,
-    reason: "禁止動態執行的 eval 或 Function 建構子",
-  },
-  {
-    re: /\bimport\s*(?:\(|\.\s*meta\b)/,
-    reason: "禁止動態模組匯入",
-  },
-  {
-    re: /(?:\?\.\s*|\.\s*)constructor\b|\[\s*\(?\s*["'`]constructor["'`]\s*\)?\s*\]/,
-    reason: "禁止存取 constructor 原型鏈",
-  },
-  {
-    re: /\}\s*=\s*\(?\s*(?:window|self|globalThis|parent|top|document|frames)\b|(?:=>|=|,|\(|\|\||&&|\?\?|\?|:|\breturn\s+|\[)\s*(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|eval|Function)\b/,
-    reason: "禁止解構或別名參照受限全域物件與網路 API",
-  },
-  {
-    re: /\bwith\s*\(/,
-    reason: "禁止使用 with 陳述式",
-  },
-];
-
-const REGEX_PRECEDING_KEYWORDS = new Set([
-  "return",
-  "throw",
-  "case",
-  "delete",
-  "void",
-  "typeof",
-  "in",
-  "instanceof",
-  "new",
-  "yield",
-  "await",
-  "of",
-  "else",
-  "do",
+const FORBIDDEN_GLOBALS = new Set([
+  "eval",
+  "Function",
+  "fetch",
+  "XMLHttpRequest",
+  "WebSocket",
+  "EventSource",
+  "sendBeacon",
+  "localStorage",
+  "sessionStorage",
+  "indexedDB",
+  "Reflect",
+  "Proxy",
+  "parent",
+  "top",
+  "frames",
+  "self",
+  "globalThis",
+  "opener",
+  "location",
+  "open",
+  "close",
+  "navigate",
+  "postMessage",
+  "importScripts",
+  "navigator",
+  "cookieStore",
+  "SharedWorker",
+  "Worker",
+  "ServiceWorker",
+  "ActiveXObject",
 ]);
 
-const CONDITION_KEYWORDS = new Set(["if", "while", "for", "with"]);
+const SAFE_DOCUMENT_PROPS = new Set([
+  "getElementById",
+  "querySelector",
+  "querySelectorAll",
+  "createElement",
+  "createElementNS",
+  "createTextNode",
+  "body",
+  "documentElement",
+]);
+
+const SAFE_WINDOW_PROPS = new Set([
+  "addEventListener",
+  "removeEventListener",
+  "requestAnimationFrame",
+  "cancelAnimationFrame",
+  "getComputedStyle",
+  "matchMedia",
+  "innerWidth",
+  "innerHeight",
+  "devicePixelRatio",
+]);
+
+const FORBIDDEN_PROPS = new Set([
+  "constructor",
+  "__proto__",
+  "prototype",
+  "ownerDocument",
+  "defaultView",
+  "contentWindow",
+  "contentDocument",
+  "getRootNode",
+  "parentNode",
+  "cookie",
+  "domain",
+  "write",
+  "writeln",
+  "getPrototypeOf",
+  "setPrototypeOf",
+  "getOwnPropertyDescriptor",
+  "getOwnPropertyDescriptors",
+  "__lookupGetter__",
+  "__defineGetter__",
+  "__lookupSetter__",
+  "__defineSetter__",
+  "postMessage",
+]);
+
+const FORBIDDEN_DESTRUCTURE_GLOBALS = new Set([
+  "eval",
+  "Function",
+  "fetch",
+  "XMLHttpRequest",
+  "WebSocket",
+  "EventSource",
+  "sendBeacon",
+  "open",
+  "postMessage",
+  "document",
+  "window",
+  "parent",
+  "frames",
+  "self",
+  "globalThis",
+  "opener",
+  "Reflect",
+  "Proxy",
+]);
+
+const ALLOWED_SCRIPT_TYPES = new Set(["", "text/javascript", "application/javascript"]);
 
 const NAVIGABLE_URL_ATTRS = new Set(["href", "xlink:href", "action", "formaction"]);
 
@@ -183,248 +220,443 @@ function checkCss(rawCss: string): void {
   }
 }
 
-function foldStringConcat(code: string): string {
-  let cur = code;
-  const re = /(["'])((?:\\.|(?!\1)[^\\\r\n])*)\1\s*\+\s*(["'])((?:\\.|(?!\3)[^\\\r\n])*)\3/g;
-  for (let pass = 0; pass < 8; pass += 1) {
-    const next = cur.replace(re, (_m, q1: string, s1: string, q2: string, s2: string) => {
-      const rhs = q1 === q2 ? s2 : s2.replace(new RegExp(q1, "g"), `\\${q1}`);
-      return `${q1}${s1}${rhs}${q1}`;
-    });
-    if (next === cur) break;
-    cur = next;
-  }
-  return cur;
+interface SimScope {
+  isFunction: boolean;
+  vars: Set<string>;
+  lexicals: Set<string>;
+  constStrings: Map<string, string>;
+  taintedVars: Set<string>;
+  parent: SimScope | null;
 }
 
-function stripJsComments(code: string): string {
-  const out: string[] = [];
-  const templateBraceStack: number[] = [];
-  const parenIsConditionStack: boolean[] = [];
-  let i = 0;
-  const n = code.length;
-  let canStartRegex = true;
-  let lastWord = "";
-
-  const readUnicodeEscape = (): string | null => {
-    if (code[i] !== "\\" || code[i + 1] !== "u") return null;
-    if (code[i + 2] === "{") {
-      const end = code.indexOf("}", i + 3);
-      if (end > i + 3 && /^[0-9a-fA-F]+$/.test(code.slice(i + 3, end))) {
-        const cp = parseInt(code.slice(i + 3, end), 16);
-        if (cp > 0 && cp <= 0x10ffff) {
-          i = end + 1;
-          return String.fromCodePoint(cp);
-        }
-      }
-    } else if (/^[0-9a-fA-F]{4}$/.test(code.slice(i + 2, i + 6))) {
-      const cp = parseInt(code.slice(i + 2, i + 6), 16);
-      i += 6;
-      return String.fromCharCode(cp);
-    }
-    return null;
+function createSimScope(isFunction: boolean, parent: SimScope | null): SimScope {
+  return {
+    isFunction,
+    vars: new Set(),
+    lexicals: new Set(),
+    constStrings: new Map(),
+    taintedVars: new Set(),
+    parent,
   };
+}
 
-  const consumeTemplateBody = () => {
-    while (i < n) {
-      const c = code[i];
-      if (c === "\\" && i + 1 < n) {
-        out.push(c, code[i + 1]);
-        i += 2;
-        continue;
-      }
-      if (c === "`") {
-        out.push("`");
-        i += 1;
-        canStartRegex = false;
-        lastWord = "";
-        return;
-      }
-      if (c === "$" && code[i + 1] === "{") {
-        out.push("${");
-        i += 2;
-        templateBraceStack.push(0);
-        canStartRegex = true;
-        lastWord = "";
-        return;
-      }
-      out.push(c);
-      i += 1;
+function collectBindingNames(name: ts.BindingName, target: Set<string>): void {
+  if (ts.isIdentifier(name)) {
+    target.add(name.text);
+  } else if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {
+    for (const el of name.elements) {
+      if (ts.isBindingElement(el)) collectBindingNames(el.name, target);
     }
-  };
-
-  while (i < n) {
-    const ch = code[i];
-    if (ch === "'" || ch === '"') {
-      const quote = ch;
-      out.push(quote);
-      i += 1;
-      while (i < n) {
-        const c = code[i];
-        if (c === "\\" && i + 1 < n) {
-          out.push(c, code[i + 1]);
-          i += 2;
-          continue;
-        }
-        out.push(c);
-        i += 1;
-        if (c === quote) break;
-      }
-      canStartRegex = false;
-      lastWord = "";
-      continue;
-    }
-    if (ch === "`") {
-      out.push("`");
-      i += 1;
-      consumeTemplateBody();
-      continue;
-    }
-    if (ch === "}" && templateBraceStack.length > 0 && templateBraceStack[templateBraceStack.length - 1] === 0) {
-      templateBraceStack.pop();
-      out.push("}");
-      i += 1;
-      consumeTemplateBody();
-      continue;
-    }
-    if (ch === "{") {
-      if (templateBraceStack.length > 0) templateBraceStack[templateBraceStack.length - 1] += 1;
-      out.push("{");
-      i += 1;
-      canStartRegex = true;
-      lastWord = "";
-      continue;
-    }
-    if (ch === "}") {
-      if (templateBraceStack.length > 0) templateBraceStack[templateBraceStack.length - 1] -= 1;
-      out.push("}");
-      i += 1;
-      canStartRegex = true;
-      lastWord = "";
-      continue;
-    }
-    if (ch === "/" && code[i + 1] === "/") {
-      i += 2;
-      while (i < n && code[i] !== "\n") i += 1;
-      if (i < n && code[i] === "\n") {
-        out.push("\n");
-        i += 1;
-      } else {
-        out.push(" ");
-      }
-      continue;
-    }
-    if (ch === "/" && code[i + 1] === "*") {
-      i += 2;
-      while (i < n && !(code[i] === "*" && code[i + 1] === "/")) i += 1;
-      if (i < n) i += 2;
-      out.push(" ");
-      continue;
-    }
-    if (ch === "/" && canStartRegex) {
-      out.push("/");
-      i += 1;
-      let inClass = false;
-      while (i < n) {
-        const c = code[i];
-        if (c === "\\" && i + 1 < n) {
-          out.push(c, code[i + 1]);
-          i += 2;
-          continue;
-        }
-        if (c === "[") inClass = true;
-        else if (c === "]") inClass = false;
-        else if (c === "/" && !inClass) {
-          out.push("/");
-          i += 1;
-          break;
-        } else if (c === "\n" || c === "\r") {
-          break;
-        }
-        out.push(c);
-        i += 1;
-      }
-      while (i < n && /[a-zA-Z]/.test(code[i])) {
-        out.push(code[i]);
-        i += 1;
-      }
-      canStartRegex = false;
-      lastWord = "";
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      out.push(ch);
-      i += 1;
-      continue;
-    }
-    if (/[A-Za-z_$]/.test(ch) || (ch === "\\" && code[i + 1] === "u")) {
-      let word = "";
-      while (i < n) {
-        if (/[A-Za-z0-9_$]/.test(code[i])) {
-          word += code[i];
-          i += 1;
-        } else {
-          const decoded = readUnicodeEscape();
-          if (decoded !== null) word += decoded;
-          else break;
-        }
-      }
-      if (word) {
-        out.push(word);
-        canStartRegex = REGEX_PRECEDING_KEYWORDS.has(word);
-        lastWord = word;
-      } else {
-        out.push(ch);
-        i += 1;
-        canStartRegex = true;
-        lastWord = "";
-      }
-      continue;
-    }
-    if (/[0-9]/.test(ch)) {
-      while (i < n && /[0-9a-zA-Z_.]/.test(code[i])) {
-        out.push(code[i]);
-        i += 1;
-      }
-      canStartRegex = false;
-      lastWord = "";
-      continue;
-    }
-    if (ch === "(") {
-      parenIsConditionStack.push(CONDITION_KEYWORDS.has(lastWord));
-      out.push("(");
-      i += 1;
-      canStartRegex = true;
-      lastWord = "";
-      continue;
-    }
-    if (ch === ")") {
-      out.push(")");
-      i += 1;
-      canStartRegex = parenIsConditionStack.pop() ?? false;
-      lastWord = "";
-      continue;
-    }
-    if (ch === "]") {
-      out.push("]");
-      i += 1;
-      canStartRegex = false;
-      lastWord = "";
-      continue;
-    }
-    if ((ch === "+" || ch === "-") && code[i + 1] === ch) {
-      out.push(ch, ch);
-      i += 2;
-      canStartRegex = false;
-      lastWord = "";
-      continue;
-    }
-    out.push(ch);
-    i += 1;
-    canStartRegex = true;
-    lastWord = "";
   }
-  return out.join("");
+}
+
+function hoistVarsInScope(node: ts.Node, varTarget: Set<string>): void {
+  ts.forEachChild(node, (child) => {
+    if (ts.isVariableStatement(child)) {
+      const isLexical = (child.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
+      if (!isLexical) {
+        for (const decl of child.declarationList.declarations) {
+          collectBindingNames(decl.name, varTarget);
+        }
+      }
+      return;
+    }
+    if (ts.isForStatement(child) || ts.isForInStatement(child) || ts.isForOfStatement(child)) {
+      if (child.initializer && ts.isVariableDeclarationList(child.initializer)) {
+        const isLexical = (child.initializer.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
+        if (!isLexical) {
+          for (const decl of child.initializer.declarations) {
+            collectBindingNames(decl.name, varTarget);
+          }
+        }
+      }
+    }
+    if (ts.isFunctionDeclaration(child) && child.name) {
+      varTarget.add(child.name.text);
+      return;
+    }
+    if (ts.isFunctionLike(child) || ts.isClassDeclaration(child) || ts.isClassExpression(child)) {
+      return;
+    }
+    hoistVarsInScope(child, varTarget);
+  });
+}
+
+function collectBlockLexicals(statements: readonly ts.Statement[], target: Set<string>): void {
+  for (const stmt of statements) {
+    if (ts.isVariableStatement(stmt)) {
+      const isLexical = (stmt.declarationList.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
+      if (isLexical) {
+        for (const decl of stmt.declarationList.declarations) {
+          collectBindingNames(decl.name, target);
+        }
+      }
+    } else if (ts.isClassDeclaration(stmt) && stmt.name) {
+      target.add(stmt.name.text);
+    }
+  }
+}
+
+function isShadowed(name: string, scope: SimScope): boolean {
+  let cur: SimScope | null = scope;
+  while (cur) {
+    if (cur.lexicals.has(name)) return true;
+    // Top-level `var` does not shadow LegacyUnforgeable browser globals (`top`, `window`, `document`, `location`).
+    if (cur.isFunction && cur.vars.has(name)) return true;
+    cur = cur.parent;
+  }
+  return false;
+}
+
+function findScopeForVar(name: string, scope: SimScope): SimScope {
+  let cur: SimScope | null = scope;
+  while (cur) {
+    if (cur.lexicals.has(name) || cur.vars.has(name)) return cur;
+    cur = cur.parent;
+  }
+  return scope;
+}
+
+function isTaintedVar(name: string, scope: SimScope): boolean {
+  let cur: SimScope | null = scope;
+  while (cur) {
+    if (cur.taintedVars.has(name)) return true;
+    if (cur.lexicals.has(name) || cur.vars.has(name)) return false;
+    cur = cur.parent;
+  }
+  return false;
+}
+
+function resolveConstString(name: string, scope: SimScope): string | null {
+  let cur: SimScope | null = scope;
+  while (cur) {
+    if (cur.constStrings.has(name)) return cur.constStrings.get(name)!;
+    if (cur.lexicals.has(name) || cur.vars.has(name)) return null;
+    cur = cur.parent;
+  }
+  return null;
+}
+
+function evalStaticString(expr: ts.Expression, scope: SimScope): string | null {
+  if (ts.isParenthesizedExpression(expr)) {
+    return evalStaticString(expr.expression, scope);
+  }
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
+    return expr.text;
+  }
+  if (ts.isIdentifier(expr)) {
+    return resolveConstString(expr.text, scope);
+  }
+  if (ts.isTemplateExpression(expr)) {
+    let out = expr.head.text;
+    for (const span of expr.templateSpans) {
+      const val = evalStaticString(span.expression, scope);
+      if (val === null) return null;
+      out += val + span.literal.text;
+    }
+    return out;
+  }
+  if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const l = evalStaticString(expr.left, scope);
+    const r = evalStaticString(expr.right, scope);
+    if (l !== null && r !== null) return l + r;
+  }
+  return null;
+}
+
+function isSafeDynamicIndex(expr: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(expr)) {
+    return isSafeDynamicIndex(expr.expression);
+  }
+  if (ts.isNumericLiteral(expr) || ts.isIdentifier(expr)) {
+    return true;
+  }
+  if (ts.isPrefixUnaryExpression(expr) || ts.isPostfixUnaryExpression(expr)) {
+    return isSafeDynamicIndex(expr.operand);
+  }
+  if (ts.isPropertyAccessExpression(expr)) {
+    return isSafeDynamicIndex(expr.expression);
+  }
+  if (ts.isConditionalExpression(expr)) {
+    return isSafeDynamicIndex(expr.whenTrue) && isSafeDynamicIndex(expr.whenFalse);
+  }
+  if (ts.isBinaryExpression(expr)) {
+    if (expr.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      if (
+        ts.isStringLiteral(expr.left) ||
+        ts.isStringLiteral(expr.right) ||
+        ts.isNoSubstitutionTemplateLiteral(expr.left) ||
+        ts.isNoSubstitutionTemplateLiteral(expr.right) ||
+        ts.isTemplateExpression(expr.left) ||
+        ts.isTemplateExpression(expr.right)
+      ) {
+        return false;
+      }
+    }
+    return isSafeDynamicIndex(expr.left) && isSafeDynamicIndex(expr.right);
+  }
+  return false;
+}
+
+function isInReferencePosition(id: ts.Identifier): boolean {
+  const p = id.parent;
+  if (!p) return true;
+  if (ts.isPropertyAccessExpression(p) && p.name === id) return false;
+  if (ts.isPropertyAssignment(p) && p.name === id) return false;
+  if (ts.isBindingElement(p) && (p.name === id || p.propertyName === id)) return false;
+  if (ts.isVariableDeclaration(p) && p.name === id) return false;
+  if (ts.isParameter(p) && p.name === id) return false;
+  if (
+    (ts.isFunctionDeclaration(p) ||
+      ts.isFunctionExpression(p) ||
+      ts.isClassDeclaration(p) ||
+      ts.isClassExpression(p) ||
+      ts.isMethodDeclaration(p) ||
+      ts.isGetAccessorDeclaration(p) ||
+      ts.isSetAccessorDeclaration(p) ||
+      ts.isPropertyDeclaration(p)) &&
+    p.name === id
+  ) {
+    return false;
+  }
+  if ((ts.isLabeledStatement(p) || ts.isBreakStatement(p) || ts.isContinueStatement(p)) && p.label === id) {
+    return false;
+  }
+  return true;
+}
+
+function validateBracketOrComputedKey(expr: ts.Expression, scope: SimScope): void {
+  if (ts.isIdentifier(expr) && isTaintedVar(expr.text, scope)) {
+    throw new AppError(422, "互動模擬未通過安全檢查：禁止動態索引存取受限原型或屬性。");
+  }
+  const resolved = evalStaticString(expr, scope);
+  if (resolved !== null) {
+    if (FORBIDDEN_PROPS.has(resolved)) {
+      throw new AppError(422, "互動模擬未通過安全檢查：禁止存取受限屬性或原型鏈。");
+    }
+    return;
+  }
+  if (!isSafeDynamicIndex(expr)) {
+    throw new AppError(422, "互動模擬未通過安全檢查：禁止複雜動態計算屬性索引。");
+  }
+}
+
+function validateSimulationScript(rawScript: string): void {
+  const sf = ts.createSourceFile("sim.js", rawScript, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const diagnostics = (sf as ts.SourceFile & { parseDiagnostics?: unknown[] }).parseDiagnostics;
+  if (diagnostics && diagnostics.length > 0) {
+    throw new AppError(422, "互動模擬未通過安全檢查：腳本語法無效。");
+  }
+
+  const rootScope = createSimScope(false, null);
+  hoistVarsInScope(sf, rootScope.vars);
+  collectBlockLexicals(sf.statements, rootScope.lexicals);
+
+  const visit = (node: ts.Node, scope: SimScope, fnScope: SimScope, inClass: boolean): void => {
+    if (
+      ts.isWithStatement(node) ||
+      ts.isImportDeclaration(node) ||
+      ts.isExportDeclaration(node) ||
+      ts.isExportAssignment(node)
+    ) {
+      throw new AppError(422, "互動模擬未通過安全檢查：禁止使用 with 或模組匯出入語法。");
+    }
+    if (ts.isMetaProperty(node)) {
+      throw new AppError(422, "互動模擬未通過安全檢查：禁止動態模組匯入。");
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      throw new AppError(422, "互動模擬未通過安全檢查：禁止動態模組匯入。");
+    }
+    if (node.kind === ts.SyntaxKind.ThisKeyword && !inClass) {
+      throw new AppError(422, "互動模擬未通過安全檢查：禁止於非類別範疇存取全域 this。");
+    }
+
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      (node.expression.text === "setTimeout" || node.expression.text === "setInterval") &&
+      node.arguments.length > 0
+    ) {
+      const arg0 = node.arguments[0];
+      const safeCallback =
+        ts.isArrowFunction(arg0) ||
+        ts.isFunctionExpression(arg0) ||
+        (ts.isIdentifier(arg0) && !isTaintedVar(arg0.text, scope) && evalStaticString(arg0, scope) === null);
+      if (!safeCallback) {
+        throw new AppError(422, "互動模擬未通過安全檢查：禁止以字串動態執行計時器腳本。");
+      }
+    }
+
+    if (ts.isIdentifier(node) && isInReferencePosition(node)) {
+      const name = node.text;
+      if (!isShadowed(name, scope)) {
+        if (FORBIDDEN_GLOBALS.has(name)) {
+          throw new AppError(422, `互動模擬未通過安全檢查：禁止存取受限全域介面 (${name})。`);
+        }
+        if (name === "document") {
+          const p = node.parent;
+          const ok =
+            Boolean(p) &&
+            ts.isPropertyAccessExpression(p) &&
+            p.expression === node &&
+            SAFE_DOCUMENT_PROPS.has(p.name.text);
+          if (!ok) {
+            throw new AppError(422, "互動模擬未通過安全檢查：禁止存取受限的 document 屬性或別名。");
+          }
+        } else if (name === "window") {
+          const p = node.parent;
+          const ok =
+            Boolean(p) &&
+            ts.isPropertyAccessExpression(p) &&
+            p.expression === node &&
+            SAFE_WINDOW_PROPS.has(p.name.text);
+          if (!ok) {
+            throw new AppError(422, "互動模擬未通過安全檢查：禁止存取受限全域視窗或別名。");
+          }
+        }
+      }
+    }
+
+    if (ts.isPropertyAccessExpression(node) && FORBIDDEN_PROPS.has(node.name.text)) {
+      throw new AppError(422, "互動模擬未通過安全檢查：禁止存取受限屬性或原型鏈。");
+    }
+
+    if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name) && (node.name.text === "constructor" || node.name.text === "__proto__")) {
+      throw new AppError(422, "互動模擬未通過安全檢查：禁止覆寫或存取 constructor / __proto__。");
+    }
+
+    if (ts.isElementAccessExpression(node)) {
+      validateBracketOrComputedKey(node.argumentExpression, scope);
+    }
+
+    if (ts.isComputedPropertyName(node)) {
+      validateBracketOrComputedKey(node.expression, scope);
+    }
+
+    if (ts.isObjectBindingPattern(node)) {
+      for (const elem of node.elements) {
+        if (!ts.isBindingElement(elem)) continue;
+        if (elem.propertyName) {
+          if (ts.isIdentifier(elem.propertyName)) {
+            const key = elem.propertyName.text;
+            if (FORBIDDEN_PROPS.has(key) || FORBIDDEN_DESTRUCTURE_GLOBALS.has(key)) {
+              throw new AppError(422, "互動模擬未通過安全檢查：禁止解構受限屬性或全域介面。");
+            }
+          } else if (ts.isStringLiteral(elem.propertyName) || ts.isNoSubstitutionTemplateLiteral(elem.propertyName)) {
+            const key = elem.propertyName.text;
+            if (FORBIDDEN_PROPS.has(key) || FORBIDDEN_DESTRUCTURE_GLOBALS.has(key)) {
+              throw new AppError(422, "互動模擬未通過安全檢查：禁止解構受限屬性或全域介面。");
+            }
+          } else if (ts.isComputedPropertyName(elem.propertyName)) {
+            const key = evalStaticString(elem.propertyName.expression, scope);
+            if (key !== null && (FORBIDDEN_PROPS.has(key) || FORBIDDEN_DESTRUCTURE_GLOBALS.has(key))) {
+              throw new AppError(422, "互動模擬未通過安全檢查：禁止解構受限屬性或全域介面。");
+            }
+          }
+        } else if (ts.isIdentifier(elem.name)) {
+          const key = elem.name.text;
+          if (FORBIDDEN_PROPS.has(key) || FORBIDDEN_DESTRUCTURE_GLOBALS.has(key)) {
+            throw new AppError(422, "互動模擬未通過安全檢查：禁止解構受限屬性或全域介面。");
+          }
+        }
+      }
+    }
+
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      if (node.initializer) {
+        const s = evalStaticString(node.initializer, scope);
+        if (s !== null) {
+          scope.constStrings.set(node.name.text, s);
+          if (FORBIDDEN_PROPS.has(s)) scope.taintedVars.add(node.name.text);
+        } else {
+          scope.constStrings.delete(node.name.text);
+        }
+      }
+    } else if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(node.left)
+    ) {
+      const targetScope = findScopeForVar(node.left.text, scope);
+      const s = evalStaticString(node.right, scope);
+      if (s !== null) {
+        targetScope.constStrings.set(node.left.text, s);
+        if (FORBIDDEN_PROPS.has(s)) targetScope.taintedVars.add(node.left.text);
+      } else {
+        targetScope.constStrings.delete(node.left.text);
+      }
+    }
+
+    // Scope transitions
+    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+      const classScope = createSimScope(false, scope);
+      if (node.name) classScope.lexicals.add(node.name.text);
+      ts.forEachChild(node, (child) => visit(child, classScope, fnScope, true));
+      return;
+    }
+
+    if (
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isGetAccessorDeclaration(node) ||
+      ts.isSetAccessorDeclaration(node) ||
+      ts.isConstructorDeclaration(node)
+    ) {
+      const nextFnScope = createSimScope(true, scope);
+      if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) && node.name) {
+        nextFnScope.lexicals.add(node.name.text);
+      }
+      for (const param of node.parameters) {
+        collectBindingNames(param.name, nextFnScope.lexicals);
+      }
+      if (node.body) {
+        if (ts.isBlock(node.body)) {
+          hoistVarsInScope(node.body, nextFnScope.vars);
+          collectBlockLexicals(node.body.statements, nextFnScope.lexicals);
+        }
+      }
+      const nextInClass =
+        ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) ? false : inClass;
+      ts.forEachChild(node, (child) => visit(child, nextFnScope, nextFnScope, nextInClass));
+      return;
+    }
+
+    if (ts.isBlock(node)) {
+      const blockScope = createSimScope(false, scope);
+      collectBlockLexicals(node.statements, blockScope.lexicals);
+      ts.forEachChild(node, (child) => visit(child, blockScope, fnScope, inClass));
+      return;
+    }
+
+    if (ts.isForStatement(node) || ts.isForInStatement(node) || ts.isForOfStatement(node)) {
+      const loopScope = createSimScope(false, scope);
+      if (node.initializer && ts.isVariableDeclarationList(node.initializer)) {
+        const isLexical = (node.initializer.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
+        if (isLexical) {
+          for (const decl of node.initializer.declarations) {
+            collectBindingNames(decl.name, loopScope.lexicals);
+          }
+        }
+      }
+      ts.forEachChild(node, (child) => visit(child, loopScope, fnScope, inClass));
+      return;
+    }
+
+    if (ts.isCatchClause(node)) {
+      const catchScope = createSimScope(false, scope);
+      if (node.variableDeclaration) {
+        collectBindingNames(node.variableDeclaration.name, catchScope.lexicals);
+      }
+      ts.forEachChild(node, (child) => visit(child, catchScope, fnScope, inClass));
+      return;
+    }
+
+    ts.forEachChild(node, (child) => visit(child, scope, fnScope, inClass));
+  };
+
+  visit(sf, rootScope, rootScope, false);
 }
 
 export function sanitizeSimulationHtml(rawHtml: string): string {
@@ -463,8 +695,13 @@ export function sanitizeSimulationHtml(rawHtml: string): string {
       throw new AppError(422, "互動模擬未通過安全檢查：禁止嵌入 iframe/object/form/template 等受限標籤。");
     }
     const attribs = (el as { attribs?: Record<string, string> }).attribs ?? {};
-    if (tagName === "script" && "src" in attribs) {
-      throw new AppError(422, "互動模擬未通過安全檢查：禁止外部或 src 腳本載入。");
+    if (tagName === "script") {
+      if ("src" in attribs) {
+        throw new AppError(422, "互動模擬未通過安全檢查：禁止外部或 src 腳本載入。");
+      }
+      if ("type" in attribs && !ALLOWED_SCRIPT_TYPES.has(attribs.type.trim().toLowerCase())) {
+        throw new AppError(422, "互動模擬未通過安全檢查：僅允許標準 JavaScript script 類型。");
+      }
     }
     for (const [rawAttrName, attrVal] of Object.entries(attribs)) {
       const attrName = rawAttrName.toLowerCase();
@@ -499,22 +736,17 @@ export function sanitizeSimulationHtml(rawHtml: string): string {
       checkCss($(el).text());
     }
     if (tagName === "script") {
-      const rawScript = $(el).text();
-      const stripped = stripJsComments(rawScript);
-      const candidates = [rawScript, stripped, foldStringConcat(stripped)];
-      for (const candidate of candidates) {
-        for (const { re, reason } of JS_FORBIDDEN_PATTERNS) {
-          if (re.test(candidate)) {
-            throw new AppError(422, `互動模擬未通過安全檢查：${reason}。`);
-          }
-        }
-      }
+      validateSimulationScript($(el).text());
     }
   });
 
   const clean = $.html().trim();
   if (!clean) {
     throw new AppError(422, "互動模擬 HTML 內容不可為空。");
+  }
+  const clean2 = cheerio.load(clean, null, false).html().trim();
+  if (clean2 !== clean) {
+    throw new AppError(422, "互動模擬未通過安全檢查：HTML 結構剖析不一致。");
   }
   return clean;
 }
@@ -662,11 +894,17 @@ export function extractPassageSignals(
 
   const numbers: PassageNumberSignal[] = [];
   const seenNum = new Set<string>();
+  const labelStopWords = new Set([
+    "is", "are", "was", "were", "be", "been",
+    "at", "in", "on", "of", "to", "for", "with", "by", "from", "as", "into", "per",
+    "or", "and", "the", "a", "an", "that", "this", "than", "over", "under", "about",
+    "max", "min",
+  ]);
   const numRe =
     /([A-Za-z\u4e00-\u9fff_]{1,14})?\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*(ms|us|ns|s|fps|Hz|kHz|MHz|GHz|KB|MB|GB|%|px|deg|rad|位元|毫秒|秒|幀|次)?/g;
   let nm: RegExpExecArray | null;
   const numSource = (primaryText || sourceText).replace(
-    /第\s*\d+\s*[頁章節篇講課條項]|\b(?:Page|Section|Chapter|Part|Fig\.?)\s+\d+\b/gi,
+    /第\s*\d+\s*[頁章節篇講課條項]|\b(?:Page|Section|Chapter|Part|Fig\.?)\s+\d+\b|\b(?:if|while|for|switch)\s*\(+\s*-?\d+(?:\.\d+)?\s*\)+/gi,
     " ",
   );
   while ((nm = numRe.exec(numSource)) && numbers.length < 4) {
@@ -674,9 +912,12 @@ export function extractPassageSignals(
     if (!Number.isFinite(val)) continue;
     const unit = (nm[3] ?? "").trim();
     const rawLabel = (nm[1] ?? "").trim();
-    const meaningfulLabel = rawLabel && !/^\d+$/.test(rawLabel) && (rawLabel.length >= 2 || /[:=]/.test(nm[0]));
+    const meaningfulLabel =
+      rawLabel &&
+      !/^\d+$/.test(rawLabel) &&
+      (/[:=]/.test(nm[0]) || (rawLabel.length >= 2 && !labelStopWords.has(rawLabel.toLowerCase())));
     const label = meaningfulLabel ? rawLabel : unit ? `參數 (${unit})` : `參數 ${numbers.length + 1}`;
-    const key = `${label}:${val}:${unit}`;
+    const key = `${val}:${unit}`;
     if (seenNum.has(key)) continue;
     seenNum.add(key);
     numbers.push({ label, value: val, unit });
@@ -728,7 +969,7 @@ export function extractPassageSignals(
   }
 
   const sentences = (primaryText || sourceText)
-    .split(/(?<=[。！？；.!?\n])/)
+    .split(/(?<=[。！？；!?\n])|(?<=[^0-9.]\.)(?=\s|$)/)
     .map((s) => s.replace(/\s+/g, " ").trim())
     .filter((s) => s.length >= 8)
     .slice(0, 6);
