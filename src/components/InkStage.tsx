@@ -290,7 +290,7 @@ function PenNote({
   pageId: string;
   pageTitle: string;
   onActivate: () => void;
-  onUpdate: (id: string, patch: { note: string; label?: string }) => Promise<void>;
+  onUpdate: (id: string, patch: { note: string; label?: string | null }) => Promise<void>;
   onDelete: (id: string) => void;
   stylePos?: { top?: number; left?: number; maxWidth?: number };
   noteRef?: (el: HTMLElement | null) => void;
@@ -314,7 +314,7 @@ function PenNote({
     try {
       await onUpdate(annotation.id, {
         note: clean,
-        ...(draftLabel.trim() ? { label: draftLabel.trim() } : {}),
+        label: draftLabel.trim() || null,
       });
       setEditing(false);
     } finally {
@@ -658,7 +658,7 @@ export default function InkStage({
     anchorY?: number;
     sketch?: AnnotationSketch;
   }) => Promise<void>;
-  onUpdateAnnotation: (annotationId: string, patch: { note: string; label?: string }) => Promise<void>;
+  onUpdateAnnotation: (annotationId: string, patch: { note: string; label?: string | null }) => Promise<void>;
   onDeleteAnnotation: (annotationId: string) => void;
   onCreateInteractiveBlock: (opts: {
     afterBlockId: string | null;

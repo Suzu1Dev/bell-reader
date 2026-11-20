@@ -48,13 +48,15 @@ function safeJsonForScript(data: unknown): string {
 const FORBIDDEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   { re: /<(?:iframe|object|embed|applet|base|form)\b/i, reason: "禁止嵌入 iframe/object/form 等外部框架標籤" },
   { re: /<meta\b[^>]*http-equiv/i, reason: "禁止設定 meta http-equiv" },
-  { re: /(?:src|href|action|poster)\s*=\s*["']\s*(?:https?:|\/\/)/i, reason: "禁止外部網路資源連結" },
+  { re: /\b(?:src|href|action|poster)\s*=\s*["']?\s*(?:https?:|\/\/)/i, reason: "禁止外部網路資源連結" },
+  { re: /<[a-z][^>]*[\s/]on[a-z]+\s*=/i, reason: "禁止內嵌事件處理屬性" },
   { re: /@import\s+(?:url\()?\s*["']?\s*(?:https?:|\/\/)/i, reason: "禁止外部樣式匯入" },
   { re: /url\(\s*["']?\s*(?:https?:|\/\/)/i, reason: "禁止外部背景網址" },
   { re: /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\s*\(/i, reason: "禁止網路連線 API" },
   { re: /\b(?:document\.cookie|localStorage|sessionStorage)\b/i, reason: "禁止存取儲存體或 Cookie" },
   { re: /\bwindow\.open\s*\(/i, reason: "禁止開啟外部視窗" },
   { re: /\b(?:window\.)?(?:parent|top)\s*\./i, reason: "禁止跨框存取上層視窗" },
+  { re: /\b(?:window|self|globalThis|parent|top|document)\s*\[/i, reason: "禁止以中括號動態存取全域物件" },
 ];
 
 export function sanitizeSimulationHtml(rawHtml: string): string {
@@ -69,6 +71,25 @@ export function sanitizeSimulationHtml(rawHtml: string): string {
     if (re.test(trimmed)) {
       throw new AppError(422, `互動模擬未通過安全檢查：${reason}。`);
     }
+  }
+  let scriptDepth = 0;
+  const scriptTagRe = /<\/?script(?=\s|>|\/|$)/gi;
+  let tagMatch: RegExpExecArray | null;
+  while ((tagMatch = scriptTagRe.exec(trimmed))) {
+    if (tagMatch[0].startsWith("</")) {
+      if (scriptDepth === 0) {
+        throw new AppError(422, "互動模擬未通過安全檢查：禁止跳脫或未成對的 script 結束標籤。");
+      }
+      scriptDepth -= 1;
+    } else {
+      if (scriptDepth > 0) {
+        throw new AppError(422, "互動模擬未通過安全檢查：禁止巢狀 script 標籤。");
+      }
+      scriptDepth += 1;
+    }
+  }
+  if (scriptDepth !== 0) {
+    throw new AppError(422, "互動模擬未通過安全檢查：script 標籤未正確閉合。");
   }
   return trimmed;
 }
@@ -122,9 +143,9 @@ export function wrapSimulationDocument(sanitizedHtml: string, title: string): st
     font-size: 13.5px;
     line-height: 1.55;
   }
-  body { padding: 14px 16px; }
-  .sim-wrap { display: flex; flex-direction: column; gap: 12px; }
-  .sim-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+  body { padding: 12px 14px; }
+  .sim-wrap { display: flex; flex-direction: column; gap: 10px; }
+  .sim-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 10px; }
   .sim-panel {
     background: var(--card);
     border: 1px solid var(--line);
@@ -347,6 +368,7 @@ export function buildDeterministicSimulation(opts: {
   var togglesEl = document.getElementById("sim-toggles");
   var svg = document.getElementById("sim-svg");
   var topEl = document.getElementById("sim-top");
+  function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
   function render(){
     var w = Number(weightEl.value);
     weightVal.textContent = w.toFixed(1) + "x";
@@ -371,7 +393,7 @@ export function buildDeterministicSimulation(opts: {
     svg.innerHTML = visible.map(function(entry, idx){
       var y = 14 + idx * 28;
       var barW = Math.max(12, Math.round((entry.score / 100) * 240));
-      return '<text x="4" y="' + (y + 14) + '" fill="currentColor" font-size="11.5">' + entry.item.name.slice(0, 12) + '</text>' +
+      return '<text x="4" y="' + (y + 14) + '" fill="currentColor" font-size="11.5">' + esc(entry.item.name.slice(0, 12)) + '</text>' +
         '<rect x="112" y="' + (y + 2) + '" width="' + barW + '" height="16" rx="3" fill="var(--accent)" opacity="0.82"/>' +
         '<text x="' + (120 + barW) + '" y="' + (y + 14) + '" fill="var(--accent)" font-size="11.5" font-weight="600">' + entry.score + '</text>';
     }).join("");
@@ -452,7 +474,7 @@ export function buildDeterministicSimulation(opts: {
     const params = sig.numbers.slice(0, 3).map((n) => {
       const abs = Math.abs(n.value) || 10;
       const step = abs < 5 ? 0.2 : abs < 30 ? 0.5 : 1;
-      const rawMin = n.value >= 0 ? Math.max(0, abs * 0.2) : n.value * 2;
+      const rawMin = n.value > 0 ? Math.max(0, abs * 0.2) : n.value === 0 ? 0 : n.value * 2;
       const min = Number((Math.floor(rawMin / step) * step).toFixed(1));
       const max = Number((Math.ceil(Math.max(abs * 3, abs + 10) / step) * step).toFixed(1));
       return {
@@ -472,7 +494,7 @@ export function buildDeterministicSimulation(opts: {
     <div class="sim-grid" id="sim-sliders"></div>
   </div>
   <div class="sim-panel">
-    <svg class="sim-svg" viewBox="0 0 420 120" id="sim-chart" role="img" aria-label="數值推演圖表"></svg>
+    <svg class="sim-svg" viewBox="0 0 420 116" id="sim-chart" role="img" aria-label="數值推演圖表"></svg>
     <div class="sim-meta" id="sim-readout"></div>
   </div>
 </div>
@@ -484,6 +506,7 @@ export function buildDeterministicSimulation(opts: {
   var chart = document.getElementById("sim-chart");
   var statusEl = document.getElementById("sim-status");
   var readout = document.getElementById("sim-readout");
+  function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
   data.params.forEach(function(p, idx){
     var box = document.createElement("div");
     var lbl = document.createElement("div");
@@ -512,13 +535,13 @@ export function buildDeterministicSimulation(opts: {
     chart.innerHTML = data.params.map(function(p, idx){
       var v = vals[idx];
       document.getElementById("sim-v-" + idx).textContent = v + (p.unit ? " " + p.unit : "");
-      var ratio = p.base !== 0 ? v / p.base : 1;
+      var ratio = p.base !== 0 ? v / p.base : 1 + v / Math.max(1, p.max);
       ratioSum += ratio;
       var w = Math.max(12, Math.min(240, Math.round((v - p.min) / Math.max(0.1, p.max - p.min) * 240)));
-      var y = 16 + idx * 34;
-      return '<text x="4" y="' + (y + 15) + '" fill="currentColor" font-size="11.5">' + p.label.slice(0, 12) + '</text>' +
+      var y = 14 + idx * 33;
+      return '<text x="4" y="' + (y + 15) + '" fill="currentColor" font-size="11.5">' + esc(p.label.slice(0, 12)) + '</text>' +
         '<rect x="115" y="' + (y + 3) + '" width="' + w + '" height="16" rx="3" fill="var(--accent)" opacity="0.82"/>' +
-        '<text x="' + (122 + w) + '" y="' + (y + 15) + '" fill="var(--accent)" font-size="11.5" font-weight="600">' + v + (p.unit ? p.unit : "") + '</text>';
+        '<text x="' + (122 + w) + '" y="' + (y + 15) + '" fill="var(--accent)" font-size="11.5" font-weight="600">' + v + esc(p.unit ? p.unit : "") + '</text>';
     }).join("");
     var avgRatio = ratioSum / data.params.length;
     statusEl.textContent = avgRatio > 1.25 ? "高負載區間 (" + avgRatio.toFixed(2) + "x)" : avgRatio < 0.8 ? "保守區間 (" + avgRatio.toFixed(2) + "x)" : "基準區間 (" + avgRatio.toFixed(2) + "x)";
@@ -565,6 +588,7 @@ export function buildDeterministicSimulation(opts: {
   var badge = document.getElementById("sim-node-badge");
   var desc = document.getElementById("sim-flow-desc");
   var stressBtn = document.getElementById("sim-bottleneck");
+  function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
   function render(){
     badge.textContent = "節點 " + (active + 1) + " / " + data.nodes.length + (stressed ? " · 壓力測試" : "");
     stressBtn.className = "sim-btn" + (stressed ? " is-active" : "");
@@ -583,7 +607,7 @@ export function buildDeterministicSimulation(opts: {
       }
       out += '<g data-idx="' + i + '" style="cursor:pointer">' +
         '<rect x="' + x + '" y="26" width="' + w + '" height="52" rx="6" fill="' + fill + '" stroke="' + stroke + '" />' +
-        '<text x="' + (x + w / 2) + '" y="56" text-anchor="middle" fill="' + tc + '" font-size="11.5" font-weight="600">' + data.nodes[i].slice(0, 9) + '</text>' +
+        '<text x="' + (x + w / 2) + '" y="56" text-anchor="middle" fill="' + tc + '" font-size="11.5" font-weight="600">' + esc(data.nodes[i].slice(0, 9)) + '</text>' +
       '</g>';
     }
     svg.innerHTML = out;
@@ -637,13 +661,19 @@ export function buildDeterministicStepper(opts: {
   const checks: InteractiveCheck[] = [];
   if (sig.numbers.length >= 1) {
     const target = sig.numbers[0];
-    const correctVal = `${target.value}${target.unit ? ` ${target.unit}` : ""}`;
-    const d1 = `${Number((target.value * 2).toFixed(1))}${target.unit ? ` ${target.unit}` : ""}`;
-    const d2 = `${Math.max(1, Number((target.value * 0.5).toFixed(1)))}${target.unit ? ` ${target.unit}` : ""}`;
+    const unitSuffix = target.unit ? ` ${target.unit}` : "";
+    const correctVal = `${target.value}${unitSuffix}`;
+    const cand1 = target.value === 0 ? 5 : Number((target.value * 2).toFixed(1));
+    const cand2 = target.value === 0 ? 12 : target.value === 1 ? 3 : Number((target.value * 0.5).toFixed(1));
+    const d1Val = cand1 === target.value ? target.value + 5 : cand1;
+    const d2Val = cand2 === target.value || cand2 === d1Val ? target.value + 10 : cand2;
+    const rawOptions = [correctVal, `${d1Val}${unitSuffix}`, `${d2Val}${unitSuffix}`];
+    const correctIndex = focus.length % rawOptions.length;
+    const options = rawOptions.map((_, idx) => rawOptions[(idx - correctIndex + rawOptions.length) % rawOptions.length]);
     checks.push({
       question: `在「${focus.slice(0, 42)}」這段內容中，提及的關鍵數值「${target.label}」為何？`,
-      options: [correctVal, d1, d2],
-      correctIndex: 0,
+      options,
+      correctIndex,
       explanation: `原文明確指出「${target.label}」為 ${correctVal}。`,
     });
   } else {
@@ -651,14 +681,17 @@ export function buildDeterministicStepper(opts: {
     const alt1 = sig.terms[1] || "忽略前置條件直接跳過";
     const alt2 = sig.terms[2] || "僅適用於靜態離線快取";
     const snippet = (sig.sentences[0] || sig.sourceText).slice(0, 72);
+    const rawOptions = [
+      `核心機制圍繞「${keyTerm}」：${snippet}`,
+      `文章主張完全捨棄「${alt1}」而不必量測`,
+      `此段落與「${alt2}」無關，僅討論外觀樣式`,
+    ];
+    const correctIndex = focus.length % rawOptions.length;
+    const options = rawOptions.map((_, idx) => rawOptions[(idx - correctIndex + rawOptions.length) % rawOptions.length]);
     checks.push({
       question: `根據「${focus.slice(0, 36)}」段落，下列哪一項最符合原文重點？`,
-      options: [
-        `核心機制圍繞「${keyTerm}」：${snippet}`,
-        `文章主張完全捨棄「${alt1}」而不必量測`,
-        `此段落與「${alt2}」無關，僅討論外觀樣式`,
-      ],
-      correctIndex: 0,
+      options,
+      correctIndex,
       explanation: `原文指出：${snippet}`,
     });
   }

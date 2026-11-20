@@ -133,13 +133,61 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     "<object data='x'></object>",
     "<form action='/steal'><input /></form>",
     '<img src="https://evil.test/track.png" />',
+    "<img src=https://evil.test/track.png>",
+    "<svg onload=alert(1)></svg>",
     "<script>fetch('/api/pages')</script>",
     "<script>new XMLHttpRequest()</script>",
     "<script>localStorage.getItem('x')</script>",
     "<script>window.parent.postMessage('x', '*')</script>",
+    "<script>window['open']('https://evil.test')</script>",
+    "<script>window['fetch']('/api/pages')</script>",
+    "<script>self['parent'].postMessage('x','*')</script>",
+    "<div>hi</div></script><script>alert(1)</script>",
+    "<script>var x = '</script><script>alert(1)</script>'</script>",
   ]) {
     assert.throws(() => sanitizeSimulationHtml(unsafe), `expected unsafe HTML rejected: ${unsafe}`);
   }
+
+  // Zero-value numeric simulation + stepper edge case & SVG escaping
+  const zeroSim = buildDeterministicSimulation({
+    block: {
+      id: "b-zero",
+      kind: "paragraph",
+      text: "在理想狀態下，錯誤率為 0%，阻塞延遲為 0ms。",
+    },
+    pageTitle: "Zero Value Edge",
+  });
+  assert.ok(zeroSim.html.includes('"base":0,"min":0,'), "expected zero-value numeric slider min === 0");
+  assert.doesNotThrow(() => sanitizeSimulationHtml(zeroSim.html));
+
+  const zeroStepper = buildDeterministicStepper({
+    block: {
+      id: "b-zero-step",
+      kind: "paragraph",
+      text: "在理想狀態下，錯誤率為 0%。",
+    },
+    prompt: "x",
+    pageTitle: "Zero Step",
+  });
+  assert.equal(new Set(zeroStepper.checks[0].options).size, zeroStepper.checks[0].options.length);
+  assert.equal(zeroStepper.checks[0].correctIndex, "x".length % zeroStepper.checks[0].options.length);
+
+  const angleTableSim = buildDeterministicSimulation({
+    block: {
+      id: "b-angle",
+      kind: "table",
+      text: "Node | Latency\n<T1> & A | 5ms\nT2 | 12ms",
+      tableRows: [
+        ["Node", "Latency"],
+        ["<T1> & A", "5ms"],
+        ["T2", "12ms"],
+      ],
+    },
+    pageTitle: "Angle Table",
+  });
+  assert.ok(angleTableSim.html.includes("function esc("), "expected SVG escaping helper in table simulation");
+  assert.ok(angleTableSim.html.includes("esc(entry.item.name.slice(0, 12))"));
+  assert.doesNotThrow(() => sanitizeSimulationHtml(angleTableSim.html));
 });
 
 test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PATCH, refetch, and Suite Today", async () => {
@@ -302,6 +350,23 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
     const patchedAnn = (await annPatch.json()) as { annotation: { note: string; label?: string } };
     assert.equal(patchedAnn.annotation.note, "更新後的筆記內容");
     assert.equal(patchedAnn.annotation.label, "核心機制");
+
+    const clearLabelPatch = await fetch(`${srv.url}/api/pages/${page.id}/annotations/${annotation.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ note: "清除標籤後筆記", label: null }),
+    });
+    assert.equal(clearLabelPatch.status, 200);
+    const clearedAnn = (await clearLabelPatch.json()) as { annotation: { note: string; label?: string | null } };
+    assert.equal(clearedAnn.annotation.note, "清除標籤後筆記");
+    assert.equal(clearedAnn.annotation.label, undefined);
+
+    const restorePatch = await fetch(`${srv.url}/api/pages/${page.id}/annotations/${annotation.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ note: "更新後的筆記內容", label: "核心機制" }),
+    });
+    assert.equal(restorePatch.status, 200);
 
     const missingAnnPatch = await fetch(`${srv.url}/api/pages/${page.id}/annotations/missing-id`, {
       method: "PATCH",

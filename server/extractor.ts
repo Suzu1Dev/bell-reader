@@ -648,7 +648,7 @@ function extractPdfTextFallbackJs(bytes: Buffer): { pages: string[]; pageCount: 
     const rawChunk = Buffer.from(match[1], "latin1");
     let textStream = match[1];
     try {
-      textStream = inflateSync(rawChunk).toString("latin1");
+      textStream = inflateSync(rawChunk, { maxOutputLength: MAX_PDF_BYTES * 2 }).toString("latin1");
     } catch {
       // Uncompressed or different filter; inspect rawChunk directly
     }
