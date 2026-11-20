@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import compression from "compression";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -955,11 +956,12 @@ export function createApp(options: CreateAppOptions) {
     if (!block || block.kind !== "simulation" || !block.payload.html) {
       throw new AppError(404, "找不到此互動模擬畫面。");
     }
-    const html = wrapSimulationDocument(block.payload.html, block.title);
+    const nonce = randomBytes(16).toString("base64url");
+    const html = wrapSimulationDocument(block.payload.html, block.title, nonce);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'; sandbox allow-scripts",
+      `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'; sandbox allow-scripts`,
     );
     res.setHeader("X-Frame-Options", "SAMEORIGIN");
     res.setHeader("X-Content-Type-Options", "nosniff");

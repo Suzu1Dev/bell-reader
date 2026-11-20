@@ -37,8 +37,9 @@ export function validatePublicUrl(input: string): URL {
   } catch {
     throw new AppError(400, "請輸入完整的 HTTPS 網址。");
   }
-  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.+$/, "").toLowerCase();
   if (
+    !host ||
     url.protocol !== "https:" ||
     url.username ||
     url.password ||

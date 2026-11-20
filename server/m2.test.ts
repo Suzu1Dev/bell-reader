@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { Response as UndiciResponse } from "undici";
 import { createApp } from "./app.js";
 import { AppError } from "./errors.js";
-import { createPinnedLookup, extractBlocksFromPdf, fetchPublicPageSource } from "./extractor.js";
+import { createPinnedLookup, extractBlocksFromPdf, fetchPublicPageSource, validatePublicUrl } from "./extractor.js";
 import {
   buildDeterministicSimulation,
   buildDeterministicStepper,
@@ -280,6 +280,39 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     '<script type="module">fetch("/api/pages")</script>',
     '<math><mtext><table><mglyph><style><!--</style><img title="--><img src=x onerror=alert(1)>">',
     '<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>',
+    // Iteration 7 AST, DOM sink, mXSS tag, and scope/destructuring bypass vectors
+    '<noembed><img src=x onerror=alert(1)></noembed>',
+    '<noframes><img src=x onerror=alert(1)></noframes>',
+    '<xmp><img src=x onerror=alert(1)></xmp>',
+    '<div class="sim-wrap"><script>var s = document.createElement("script"); s.textContent = "parent.postMessage(1,\\"*\\")"; document.body.appendChild(s);</script></div>',
+    '<script>document.createElementNS("http://www.w3.org/1999/xhtml", "script")</script>',
+    '<script>const ce = document.createElement; ce("div")</script>',
+    '<div class="sim-wrap"><script>document.body.insertAdjacentHTML("beforeend", "<img src=x onerror=alert(1)>");</script></div>',
+    '<script>document.body.outerHTML = "<img src=x onerror=alert(1)>"</script>',
+    '<script>var el = document.createElement("div"); el.srcdoc = "<script>alert(1)</script>";</script>',
+    '<script>if (1) { var k = "constructor"; } [][k]("alert(1)")()</script>',
+    '<script>let k = "con"; k += "structor"; [][k]("alert(1)")()</script>',
+    '<script>function f() { return [][k]; } const k = "constructor";</script>',
+    '<script>let k = 0; function f() { return [][k]; } k = "constructor";</script>',
+    '<script>function f(a = parent) { var parent = 1; return a; } f();</script>',
+    '<script>function f(a = () => fetch) { var fetch = 1; return a(); } f()("/api/pages");</script>',
+    '<script>const [k] = ["constructor"]; const F = []["map"][k]; F("return 1")();</script>',
+    '<script>const [k] = ["constructor"]; const { [k]: F } = [].map;</script>',
+    '<script>const { a: k } = { a: "constructor" }; const F = []["map"][k]; F("return 1")();</script>',
+    '<script>let k; [k] = ["constructor"]; []["map"][k];</script>',
+    '<script>const o = { a: "ownerDocument", b: "defaultView" }; const w = document.body[o.a][o.b];</script>',
+    '<script>const o = { length: "constructor" }; []["map"][o.length]</script>',
+    '<script>const k = 1 ? "constructor" : "x"; []["map"][k]</script>',
+    '<script>function g(k){ return []["map"][k]; } g("constructor")</script>',
+    '<script>for (const [k] of [["constructor"]]) { []["map"][k]; }</script>',
+    '<script>const k = String.fromCharCode(99,111,110,115,116,114,117,99,116,111,114); []["map"][k]</script>',
+    '<script>class C extends (this, Array) {}</script>',
+    '<script>class A { [this.open("https://evil.test")]() {} }</script>',
+    '<script>navigation.navigate("https://evil.test");</script>',
+    '<script>(setTimeout)("alert(1)", 0);</script>',
+    '<script>(0, setTimeout)("alert(1)", 0);</script>',
+    '<script>const [code] = ["alert(1)"]; setTimeout(code, 0);</script>',
+    '<script>const st = setTimeout; st(function(){}, 0);</script>',
   ]) {
     assert.throws(() => sanitizeSimulationHtml(unsafe), `expected unsafe HTML rejected: ${unsafe}`);
   }
@@ -309,6 +342,11 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
   assert.doesNotThrow(() =>
     sanitizeSimulationHtml(
       `<div class="sim-wrap"><canvas id="c"></canvas><script>// lead comment\n/* block */\nclass Particle { constructor(x, y) { this.x = x; this.y = y; this.location = { x, y }; } }\nvar label = "Click to fetch next step // Reflect on result";\nvar s = String(label).replace(/"/g, "&quot;");\nvar b = atob("AA//BB==");\n</script></div>`,
+    ),
+  );
+  assert.doesNotThrow(() =>
+    sanitizeSimulationHtml(
+      `<div class="sim-wrap"><script>var arr = [10, 20, 30]; for (var i = 0; i < arr.length; i++) { var v = arr[i]; var next = arr[(i + 1) % arr.length]; } arr.forEach(function(item, rawIdx){ var idx = rawIdx | 0; var n = Number(rawIdx); arr[idx]; arr[Math.floor(n)]; });</script></div>`,
     ),
   );
 
@@ -645,11 +683,19 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
     assert.equal(frameRes.headers.get("x-frame-options"), "SAMEORIGIN");
     const frameCsp = frameRes.headers.get("content-security-policy") || "";
     assert.ok(frameCsp.includes("default-src 'none'"));
-    assert.ok(frameCsp.includes("script-src 'unsafe-inline'"));
+    const nonceMatch = frameCsp.match(/script-src 'nonce-([A-Za-z0-9_-]+)'/);
+    assert.ok(nonceMatch, `expected script-src nonce in CSP: ${frameCsp}`);
+    const scriptSrcDirective = frameCsp.match(/script-src[^;]+/)?.[0] || "";
+    assert.ok(!scriptSrcDirective.includes("'unsafe-inline'"), "script-src must not permit unsafe-inline");
     assert.ok(frameCsp.includes("connect-src 'none'"));
     assert.ok(frameCsp.includes("frame-ancestors 'self'"));
     assert.ok(frameCsp.includes("sandbox allow-scripts"));
     const frameHtml = await frameRes.text();
+    const scriptTags = frameHtml.match(/<script\b[^>]*>/gi) ?? [];
+    assert.ok(scriptTags.length >= 2, "expected theme script and simulation script tags");
+    for (const tag of scriptTags) {
+      assert.ok(tag.includes(`nonce="${nonceMatch[1]}"`), `expected matching nonce on script tag: ${tag}`);
+    }
     assert.ok(decodeSimPayload(frameHtml).includes("16.6"));
 
     // Interactive stepper + upgrade + state persistence + delete
@@ -795,7 +841,22 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
   }
 });
 
-test("Extractor SSRF protection: pinned DNS lookup, mixed public/private rejection, redirect SSRF, and hop cap", async () => {
+test("Extractor SSRF protection: trailing-dot local hostnames, pinned DNS lookup, mixed public/private rejection, redirect SSRF, and hop cap", async () => {
+  // 0. Trailing-dot local / tailnet hostnames rejected before DNS or HTML embedding
+  for (const localUrl of [
+    "https://localhost./",
+    "https://sub.localhost./",
+    "https://printer.local./",
+    "https://box.ts.net./",
+    "https://./",
+  ]) {
+    assert.throws(
+      () => validatePublicUrl(localUrl),
+      (err: unknown) => err instanceof AppError && err.status === 400,
+      `expected ${localUrl} to be rejected`,
+    );
+  }
+
   // 1. createPinnedLookup returns all matching entries when options.all === true, filters by family, errors if missing
   const pinned = createPinnedLookup([
     { address: "93.184.216.34", family: 4 },

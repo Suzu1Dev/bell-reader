@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import * as cheerio from "cheerio";
 import ts from "typescript";
 import { z } from "zod";
@@ -57,6 +58,23 @@ const FORBIDDEN_TAGS = new Set([
   "math",
   "mglyph",
   "malignmark",
+  "noembed",
+  "noframes",
+  "xmp",
+]);
+
+const FORBIDDEN_CREATE_ELEMENT_TAGS = new Set([
+  "script",
+  "iframe",
+  "object",
+  "embed",
+  "base",
+  "applet",
+  "form",
+  "style",
+  "link",
+  "meta",
+  ...FORBIDDEN_TAGS,
 ]);
 
 const URL_ATTRS = new Set(["src", "href", "action", "poster", "formaction", "xlink:href", "data", "background"]);
@@ -84,6 +102,7 @@ const FORBIDDEN_GLOBALS = new Set([
   "open",
   "close",
   "navigate",
+  "navigation",
   "postMessage",
   "importScripts",
   "navigator",
@@ -131,6 +150,9 @@ const FORBIDDEN_PROPS = new Set([
   "domain",
   "write",
   "writeln",
+  "insertAdjacentHTML",
+  "outerHTML",
+  "srcdoc",
   "getPrototypeOf",
   "setPrototypeOf",
   "getOwnPropertyDescriptor",
@@ -220,12 +242,22 @@ function checkCss(rawCss: string): void {
   }
 }
 
+const SAFE_MATH_METHODS = new Set([
+  "abs", "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh",
+  "cbrt", "ceil", "clz32", "cos", "cosh", "exp", "expm1", "floor",
+  "fround", "hypot", "imul", "log", "log10", "log1p", "log2", "max",
+  "min", "pow", "random", "round", "sign", "sin", "sinh", "sqrt",
+  "tan", "tanh", "trunc",
+]);
+
 interface SimScope {
   isFunction: boolean;
   vars: Set<string>;
   lexicals: Set<string>;
   constStrings: Map<string, string>;
   taintedVars: Set<string>;
+  numericVars: Set<string>;
+  nonNumericVars: Set<string>;
   parent: SimScope | null;
 }
 
@@ -236,6 +268,8 @@ function createSimScope(isFunction: boolean, parent: SimScope | null): SimScope 
     lexicals: new Set(),
     constStrings: new Map(),
     taintedVars: new Set(),
+    numericVars: new Set(),
+    nonNumericVars: new Set(),
     parent,
   };
 }
@@ -247,6 +281,28 @@ function collectBindingNames(name: ts.BindingName, target: Set<string>): void {
     for (const el of name.elements) {
       if (ts.isBindingElement(el)) collectBindingNames(el.name, target);
     }
+  }
+}
+
+function collectAssignmentTargetNames(node: ts.Node, target: Set<string>): void {
+  if (ts.isVariableDeclarationList(node)) {
+    for (const decl of node.declarations) collectBindingNames(decl.name, target);
+  } else if (ts.isIdentifier(node)) {
+    target.add(node.text);
+  } else if (ts.isParenthesizedExpression(node)) {
+    collectAssignmentTargetNames(node.expression, target);
+  } else if (ts.isArrayLiteralExpression(node)) {
+    for (const el of node.elements) collectAssignmentTargetNames(el, target);
+  } else if (ts.isObjectLiteralExpression(node)) {
+    for (const prop of node.properties) {
+      if (ts.isPropertyAssignment(prop)) collectAssignmentTargetNames(prop.initializer, target);
+      else if (ts.isShorthandPropertyAssignment(prop)) target.add(prop.name.text);
+      else if (ts.isSpreadAssignment(prop)) collectAssignmentTargetNames(prop.expression, target);
+    }
+  } else if (ts.isSpreadElement(node)) {
+    collectAssignmentTargetNames(node.expression, target);
+  } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    collectAssignmentTargetNames(node.left, target);
   }
 }
 
@@ -317,6 +373,13 @@ function findScopeForVar(name: string, scope: SimScope): SimScope {
   return scope;
 }
 
+function markNonNumeric(name: string, scope: SimScope): void {
+  const target = findScopeForVar(name, scope);
+  target.constStrings.delete(name);
+  target.numericVars.delete(name);
+  target.nonNumericVars.add(name);
+}
+
 function isTaintedVar(name: string, scope: SimScope): boolean {
   let cur: SimScope | null = scope;
   while (cur) {
@@ -364,38 +427,119 @@ function evalStaticString(expr: ts.Expression, scope: SimScope): string | null {
   return null;
 }
 
-function isSafeDynamicIndex(expr: ts.Expression): boolean {
+function isProvablyNumeric(expr: ts.Expression, scope: SimScope, allowLengthProp = false): boolean {
   if (ts.isParenthesizedExpression(expr)) {
-    return isSafeDynamicIndex(expr.expression);
+    return isProvablyNumeric(expr.expression, scope, allowLengthProp);
   }
-  if (ts.isNumericLiteral(expr) || ts.isIdentifier(expr)) {
+  if (ts.isNumericLiteral(expr)) {
     return true;
   }
-  if (ts.isPrefixUnaryExpression(expr) || ts.isPostfixUnaryExpression(expr)) {
-    return isSafeDynamicIndex(expr.operand);
+  if (ts.isIdentifier(expr)) {
+    let cur: SimScope | null = scope;
+    while (cur) {
+      if (cur.nonNumericVars.has(expr.text)) return false;
+      if (cur.numericVars.has(expr.text)) return true;
+      if (cur.lexicals.has(expr.text) || cur.vars.has(expr.text)) return false;
+      cur = cur.parent;
+    }
+    return false;
+  }
+  if (ts.isPrefixUnaryExpression(expr)) {
+    const op = expr.operator;
+    if (
+      op === ts.SyntaxKind.PlusToken ||
+      op === ts.SyntaxKind.MinusToken ||
+      op === ts.SyntaxKind.TildeToken ||
+      op === ts.SyntaxKind.ExclamationToken
+    ) {
+      return isProvablyNumeric(expr.operand, scope, true);
+    }
+    if (op === ts.SyntaxKind.PlusPlusToken || op === ts.SyntaxKind.MinusMinusToken) {
+      return isProvablyNumeric(expr.operand, scope, false);
+    }
+    return false;
+  }
+  if (ts.isPostfixUnaryExpression(expr)) {
+    return isProvablyNumeric(expr.operand, scope, false);
   }
   if (ts.isPropertyAccessExpression(expr)) {
-    return isSafeDynamicIndex(expr.expression);
+    return allowLengthProp && expr.name.text === "length";
+  }
+  if (ts.isCallExpression(expr)) {
+    if (
+      ts.isIdentifier(expr.expression) &&
+      (expr.expression.text === "Number" ||
+        expr.expression.text === "parseInt" ||
+        expr.expression.text === "parseFloat") &&
+      !isShadowed(expr.expression.text, scope)
+    ) {
+      return true;
+    }
+    if (
+      ts.isPropertyAccessExpression(expr.expression) &&
+      ts.isIdentifier(expr.expression.expression) &&
+      expr.expression.expression.text === "Math" &&
+      !isShadowed("Math", scope) &&
+      SAFE_MATH_METHODS.has(expr.expression.name.text)
+    ) {
+      return true;
+    }
+    return false;
   }
   if (ts.isConditionalExpression(expr)) {
-    return isSafeDynamicIndex(expr.whenTrue) && isSafeDynamicIndex(expr.whenFalse);
+    return (
+      isProvablyNumeric(expr.whenTrue, scope, allowLengthProp) &&
+      isProvablyNumeric(expr.whenFalse, scope, allowLengthProp)
+    );
   }
   if (ts.isBinaryExpression(expr)) {
-    if (expr.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-      if (
-        ts.isStringLiteral(expr.left) ||
-        ts.isStringLiteral(expr.right) ||
-        ts.isNoSubstitutionTemplateLiteral(expr.left) ||
-        ts.isNoSubstitutionTemplateLiteral(expr.right) ||
-        ts.isTemplateExpression(expr.left) ||
-        ts.isTemplateExpression(expr.right)
-      ) {
-        return false;
-      }
+    const op = expr.operatorToken.kind;
+    if (op === ts.SyntaxKind.PlusToken) {
+      return isProvablyNumeric(expr.left, scope, false) && isProvablyNumeric(expr.right, scope, false);
     }
-    return isSafeDynamicIndex(expr.left) && isSafeDynamicIndex(expr.right);
+    if (op === ts.SyntaxKind.BarToken && ts.isNumericLiteral(expr.right) && expr.right.text === "0") {
+      return true;
+    }
+    if (
+      op === ts.SyntaxKind.MinusToken ||
+      op === ts.SyntaxKind.AsteriskToken ||
+      op === ts.SyntaxKind.SlashToken ||
+      op === ts.SyntaxKind.PercentToken ||
+      op === ts.SyntaxKind.AsteriskAsteriskToken ||
+      op === ts.SyntaxKind.BarToken ||
+      op === ts.SyntaxKind.AmpersandToken ||
+      op === ts.SyntaxKind.CaretToken ||
+      op === ts.SyntaxKind.LessThanLessThanToken ||
+      op === ts.SyntaxKind.GreaterThanGreaterThanToken ||
+      op === ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken ||
+      op === ts.SyntaxKind.LessThanToken ||
+      op === ts.SyntaxKind.LessThanEqualsToken ||
+      op === ts.SyntaxKind.GreaterThanToken ||
+      op === ts.SyntaxKind.GreaterThanEqualsToken ||
+      op === ts.SyntaxKind.EqualsEqualsToken ||
+      op === ts.SyntaxKind.ExclamationEqualsToken ||
+      op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      op === ts.SyntaxKind.ExclamationEqualsEqualsToken
+    ) {
+      return isProvablyNumeric(expr.left, scope, true) && isProvablyNumeric(expr.right, scope, true);
+    }
+    return false;
   }
   return false;
+}
+
+function unwrapCallee(expr: ts.Expression): ts.Expression {
+  let cur = expr;
+  while (true) {
+    if (ts.isParenthesizedExpression(cur)) {
+      cur = cur.expression;
+    } else if (ts.isBinaryExpression(cur) && cur.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      cur = cur.right;
+    } else {
+      break;
+    }
+  }
+  return cur;
 }
 
 function isInReferencePosition(id: ts.Identifier): boolean {
@@ -425,9 +569,16 @@ function isInReferencePosition(id: ts.Identifier): boolean {
   return true;
 }
 
-function validateBracketOrComputedKey(expr: ts.Expression, scope: SimScope): void {
+function validateBracketOrComputedKey(
+  expr: ts.Expression,
+  scope: SimScope,
+  pendingNumericChecks: Array<{ expr: ts.Expression; scope: SimScope }>,
+): void {
   if (ts.isIdentifier(expr) && isTaintedVar(expr.text, scope)) {
     throw new AppError(422, "互動模擬未通過安全檢查：禁止動態索引存取受限原型或屬性。");
+  }
+  if (ts.isPropertyAccessExpression(expr)) {
+    throw new AppError(422, "互動模擬未通過安全檢查：禁止使用物件屬性作為動態計算索引。");
   }
   const resolved = evalStaticString(expr, scope);
   if (resolved !== null) {
@@ -436,9 +587,10 @@ function validateBracketOrComputedKey(expr: ts.Expression, scope: SimScope): voi
     }
     return;
   }
-  if (!isSafeDynamicIndex(expr)) {
-    throw new AppError(422, "互動模擬未通過安全檢查：禁止複雜動態計算屬性索引。");
+  if (!isProvablyNumeric(expr, scope, false)) {
+    throw new AppError(422, "互動模擬未通過安全檢查：禁止非數值動態計算屬性索引。");
   }
+  pendingNumericChecks.push({ expr, scope });
 }
 
 function validateSimulationScript(rawScript: string): void {
@@ -451,6 +603,7 @@ function validateSimulationScript(rawScript: string): void {
   const rootScope = createSimScope(false, null);
   hoistVarsInScope(sf, rootScope.vars);
   collectBlockLexicals(sf.statements, rootScope.lexicals);
+  const pendingNumericChecks: Array<{ expr: ts.Expression; scope: SimScope }> = [];
 
   const visit = (node: ts.Node, scope: SimScope, fnScope: SimScope, inClass: boolean): void => {
     if (
@@ -471,19 +624,20 @@ function validateSimulationScript(rawScript: string): void {
       throw new AppError(422, "互動模擬未通過安全檢查：禁止於非類別範疇存取全域 this。");
     }
 
-    if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      (node.expression.text === "setTimeout" || node.expression.text === "setInterval") &&
-      node.arguments.length > 0
-    ) {
-      const arg0 = node.arguments[0];
-      const safeCallback =
-        ts.isArrowFunction(arg0) ||
-        ts.isFunctionExpression(arg0) ||
-        (ts.isIdentifier(arg0) && !isTaintedVar(arg0.text, scope) && evalStaticString(arg0, scope) === null);
-      if (!safeCallback) {
-        throw new AppError(422, "互動模擬未通過安全檢查：禁止以字串動態執行計時器腳本。");
+    if (ts.isCallExpression(node)) {
+      const callee = unwrapCallee(node.expression);
+      if (
+        ts.isIdentifier(callee) &&
+        (callee.text === "setTimeout" || callee.text === "setInterval") &&
+        !isShadowed(callee.text, scope)
+      ) {
+        let arg0: ts.Expression | undefined = node.arguments[0];
+        while (arg0 && ts.isParenthesizedExpression(arg0)) {
+          arg0 = arg0.expression;
+        }
+        if (!arg0 || (!ts.isArrowFunction(arg0) && !ts.isFunctionExpression(arg0))) {
+          throw new AppError(422, "互動模擬未通過安全檢查：禁止以非函式運算式執行計時器腳本。");
+        }
       }
     }
 
@@ -493,7 +647,13 @@ function validateSimulationScript(rawScript: string): void {
         if (FORBIDDEN_GLOBALS.has(name)) {
           throw new AppError(422, `互動模擬未通過安全檢查：禁止存取受限全域介面 (${name})。`);
         }
-        if (name === "document") {
+        if (name === "setTimeout" || name === "setInterval") {
+          const p = node.parent;
+          const isDirectCall = Boolean(p && ts.isCallExpression(p) && p.expression === node);
+          if (!isDirectCall) {
+            throw new AppError(422, "互動模擬未通過安全檢查：禁止間接參照計時器函式。");
+          }
+        } else if (name === "document") {
           const p = node.parent;
           const ok =
             Boolean(p) &&
@@ -502,6 +662,19 @@ function validateSimulationScript(rawScript: string): void {
             SAFE_DOCUMENT_PROPS.has(p.name.text);
           if (!ok) {
             throw new AppError(422, "互動模擬未通過安全檢查：禁止存取受限的 document 屬性或別名。");
+          }
+          if (p && ts.isPropertyAccessExpression(p) && (p.name.text === "createElement" || p.name.text === "createElementNS")) {
+            const call = p.parent;
+            const argIdx = p.name.text === "createElementNS" ? 1 : 0;
+            const arg =
+              call && ts.isCallExpression(call) && call.expression === p ? call.arguments[argIdx] : undefined;
+            const tag =
+              arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg))
+                ? arg.text.trim().toLowerCase()
+                : null;
+            if (!tag || FORBIDDEN_CREATE_ELEMENT_TAGS.has(tag)) {
+              throw new AppError(422, "互動模擬未通過安全檢查：禁止動態建立受限標籤。");
+            }
           }
         } else if (name === "window") {
           const p = node.parent;
@@ -526,11 +699,11 @@ function validateSimulationScript(rawScript: string): void {
     }
 
     if (ts.isElementAccessExpression(node)) {
-      validateBracketOrComputedKey(node.argumentExpression, scope);
+      validateBracketOrComputedKey(node.argumentExpression, scope, pendingNumericChecks);
     }
 
     if (ts.isComputedPropertyName(node)) {
-      validateBracketOrComputedKey(node.expression, scope);
+      validateBracketOrComputedKey(node.expression, scope, pendingNumericChecks);
     }
 
     if (ts.isObjectBindingPattern(node)) {
@@ -549,8 +722,8 @@ function validateSimulationScript(rawScript: string): void {
             }
           } else if (ts.isComputedPropertyName(elem.propertyName)) {
             const key = evalStaticString(elem.propertyName.expression, scope);
-            if (key !== null && (FORBIDDEN_PROPS.has(key) || FORBIDDEN_DESTRUCTURE_GLOBALS.has(key))) {
-              throw new AppError(422, "互動模擬未通過安全檢查：禁止解構受限屬性或全域介面。");
+            if (key === null || FORBIDDEN_PROPS.has(key) || FORBIDDEN_DESTRUCTURE_GLOBALS.has(key)) {
+              throw new AppError(422, "互動模擬未通過安全檢查：禁止解構受限或動態屬性。");
             }
           }
         } else if (ts.isIdentifier(elem.name)) {
@@ -562,28 +735,94 @@ function validateSimulationScript(rawScript: string): void {
       }
     }
 
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
-      if (node.initializer) {
-        const s = evalStaticString(node.initializer, scope);
-        if (s !== null) {
-          scope.constStrings.set(node.name.text, s);
-          if (FORBIDDEN_PROPS.has(s)) scope.taintedVars.add(node.name.text);
-        } else {
-          scope.constStrings.delete(node.name.text);
+    if (ts.isVariableDeclaration(node)) {
+      const isLexical =
+        ts.isVariableDeclarationList(node.parent) &&
+        (node.parent.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) !== 0;
+      if (ts.isIdentifier(node.name)) {
+        const targetScope = isLexical ? scope : findScopeForVar(node.name.text, scope);
+        if (node.initializer) {
+          const s = evalStaticString(node.initializer, scope);
+          if (s !== null) {
+            targetScope.constStrings.set(node.name.text, s);
+            if (FORBIDDEN_PROPS.has(s)) targetScope.taintedVars.add(node.name.text);
+            targetScope.numericVars.delete(node.name.text);
+            targetScope.nonNumericVars.add(node.name.text);
+          } else {
+            targetScope.constStrings.delete(node.name.text);
+            if (
+              !targetScope.nonNumericVars.has(node.name.text) &&
+              isProvablyNumeric(node.initializer, scope)
+            ) {
+              targetScope.numericVars.add(node.name.text);
+            } else {
+              targetScope.numericVars.delete(node.name.text);
+              targetScope.nonNumericVars.add(node.name.text);
+            }
+          }
+        }
+      } else {
+        const names = new Set<string>();
+        collectBindingNames(node.name, names);
+        for (const name of names) {
+          const targetScope = isLexical ? scope : findScopeForVar(name, scope);
+          targetScope.constStrings.delete(name);
+          targetScope.numericVars.delete(name);
+          targetScope.nonNumericVars.add(name);
         }
       }
-    } else if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      ts.isIdentifier(node.left)
-    ) {
-      const targetScope = findScopeForVar(node.left.text, scope);
-      const s = evalStaticString(node.right, scope);
-      if (s !== null) {
-        targetScope.constStrings.set(node.left.text, s);
-        if (FORBIDDEN_PROPS.has(s)) targetScope.taintedVars.add(node.left.text);
-      } else {
-        targetScope.constStrings.delete(node.left.text);
+    } else if (ts.isBinaryExpression(node)) {
+      if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        if (ts.isIdentifier(node.left)) {
+          const targetScope = findScopeForVar(node.left.text, scope);
+          const s = evalStaticString(node.right, scope);
+          if (s !== null) {
+            targetScope.constStrings.set(node.left.text, s);
+            if (FORBIDDEN_PROPS.has(s)) targetScope.taintedVars.add(node.left.text);
+            targetScope.numericVars.delete(node.left.text);
+            targetScope.nonNumericVars.add(node.left.text);
+          } else {
+            targetScope.constStrings.delete(node.left.text);
+            if (
+              !targetScope.nonNumericVars.has(node.left.text) &&
+              isProvablyNumeric(node.right, scope)
+            ) {
+              targetScope.numericVars.add(node.left.text);
+            } else {
+              targetScope.taintedVars.add(node.left.text);
+              targetScope.numericVars.delete(node.left.text);
+              targetScope.nonNumericVars.add(node.left.text);
+            }
+          }
+        } else {
+          const names = new Set<string>();
+          collectAssignmentTargetNames(node.left, names);
+          for (const name of names) {
+            markNonNumeric(name, scope);
+          }
+        }
+      } else if (node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken && ts.isIdentifier(node.left)) {
+        const targetScope = findScopeForVar(node.left.text, scope);
+        const prev = resolveConstString(node.left.text, scope);
+        const rhs = evalStaticString(node.right, scope);
+        if (prev !== null && rhs !== null) {
+          const combined = prev + rhs;
+          targetScope.constStrings.set(node.left.text, combined);
+          if (FORBIDDEN_PROPS.has(combined)) targetScope.taintedVars.add(node.left.text);
+          targetScope.numericVars.delete(node.left.text);
+          targetScope.nonNumericVars.add(node.left.text);
+        } else if (
+          targetScope.numericVars.has(node.left.text) &&
+          !targetScope.nonNumericVars.has(node.left.text) &&
+          isProvablyNumeric(node.right, scope)
+        ) {
+          // Numeric += stays numeric
+        } else {
+          targetScope.constStrings.delete(node.left.text);
+          targetScope.taintedVars.add(node.left.text);
+          targetScope.numericVars.delete(node.left.text);
+          targetScope.nonNumericVars.add(node.left.text);
+        }
       }
     }
 
@@ -591,7 +830,27 @@ function validateSimulationScript(rawScript: string): void {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
       const classScope = createSimScope(false, scope);
       if (node.name) classScope.lexicals.add(node.name.text);
-      ts.forEachChild(node, (child) => visit(child, classScope, fnScope, true));
+      for (const hc of node.heritageClauses ?? []) {
+        visit(hc, classScope, fnScope, inClass);
+      }
+      for (const member of node.members) {
+        if ("name" in member && member.name && ts.isComputedPropertyName(member.name)) {
+          visit(member.name, classScope, fnScope, inClass);
+        }
+        visit(member, classScope, fnScope, true);
+      }
+      return;
+    }
+
+    if (
+      ts.isPropertyDeclaration(node) &&
+      node.name &&
+      ts.isComputedPropertyName(node.name) &&
+      (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent))
+    ) {
+      ts.forEachChild(node, (child) => {
+        if (child !== node.name) visit(child, scope, fnScope, inClass);
+      });
       return;
     }
 
@@ -604,22 +863,40 @@ function validateSimulationScript(rawScript: string): void {
       ts.isSetAccessorDeclaration(node) ||
       ts.isConstructorDeclaration(node)
     ) {
-      const nextFnScope = createSimScope(true, scope);
-      if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) && node.name) {
-        nextFnScope.lexicals.add(node.name.text);
-      }
-      for (const param of node.parameters) {
-        collectBindingNames(param.name, nextFnScope.lexicals);
-      }
-      if (node.body) {
-        if (ts.isBlock(node.body)) {
-          hoistVarsInScope(node.body, nextFnScope.vars);
-          collectBlockLexicals(node.body.statements, nextFnScope.lexicals);
-        }
+      if (
+        "name" in node &&
+        node.name &&
+        ts.isComputedPropertyName(node.name) &&
+        !ts.isClassElement(node)
+      ) {
+        visit(node.name, scope, fnScope, inClass);
       }
       const nextInClass =
         ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) ? false : inClass;
-      ts.forEachChild(node, (child) => visit(child, nextFnScope, nextFnScope, nextInClass));
+      const paramScope = createSimScope(false, scope);
+      if (ts.isFunctionExpression(node) && node.name) {
+        paramScope.lexicals.add(node.name.text);
+      }
+      for (const param of node.parameters) {
+        visit(param, paramScope, fnScope, nextInClass);
+        const paramNames = new Set<string>();
+        collectBindingNames(param.name, paramNames);
+        for (const pName of paramNames) {
+          paramScope.lexicals.add(pName);
+          paramScope.nonNumericVars.add(pName);
+        }
+      }
+      if (node.body) {
+        const bodyScope = createSimScope(true, paramScope);
+        if (ts.isFunctionDeclaration(node) && node.name) {
+          bodyScope.lexicals.add(node.name.text);
+        }
+        if (ts.isBlock(node.body)) {
+          hoistVarsInScope(node.body, bodyScope.vars);
+          collectBlockLexicals(node.body.statements, bodyScope.lexicals);
+        }
+        visit(node.body, bodyScope, bodyScope, nextInClass);
+      }
       return;
     }
 
@@ -627,6 +904,15 @@ function validateSimulationScript(rawScript: string): void {
       const blockScope = createSimScope(false, scope);
       collectBlockLexicals(node.statements, blockScope.lexicals);
       ts.forEachChild(node, (child) => visit(child, blockScope, fnScope, inClass));
+      return;
+    }
+
+    if (ts.isCaseBlock(node)) {
+      const switchScope = createSimScope(false, scope);
+      for (const clause of node.clauses) {
+        collectBlockLexicals(clause.statements, switchScope.lexicals);
+      }
+      ts.forEachChild(node, (child) => visit(child, switchScope, fnScope, inClass));
       return;
     }
 
@@ -640,6 +926,17 @@ function validateSimulationScript(rawScript: string): void {
           }
         }
       }
+      if ((ts.isForInStatement(node) || ts.isForOfStatement(node)) && node.initializer) {
+        const targetNames = new Set<string>();
+        collectAssignmentTargetNames(node.initializer, targetNames);
+        for (const name of targetNames) {
+          if (loopScope.lexicals.has(name)) {
+            loopScope.nonNumericVars.add(name);
+          } else {
+            markNonNumeric(name, loopScope);
+          }
+        }
+      }
       ts.forEachChild(node, (child) => visit(child, loopScope, fnScope, inClass));
       return;
     }
@@ -648,6 +945,7 @@ function validateSimulationScript(rawScript: string): void {
       const catchScope = createSimScope(false, scope);
       if (node.variableDeclaration) {
         collectBindingNames(node.variableDeclaration.name, catchScope.lexicals);
+        collectBindingNames(node.variableDeclaration.name, catchScope.nonNumericVars);
       }
       ts.forEachChild(node, (child) => visit(child, catchScope, fnScope, inClass));
       return;
@@ -657,6 +955,12 @@ function validateSimulationScript(rawScript: string): void {
   };
 
   visit(sf, rootScope, rootScope, false);
+
+  for (const pending of pendingNumericChecks) {
+    if (!isProvablyNumeric(pending.expr, pending.scope, false)) {
+      throw new AppError(422, "互動模擬未通過安全檢查：禁止非數值動態計算屬性索引。");
+    }
+  }
 }
 
 export function sanitizeSimulationHtml(rawHtml: string): string {
@@ -751,8 +1055,14 @@ export function sanitizeSimulationHtml(rawHtml: string): string {
   return clean;
 }
 
-export function wrapSimulationDocument(sanitizedHtml: string, title: string): string {
+export function wrapSimulationDocument(sanitizedHtml: string, title: string, nonce?: string): string {
   const clean = sanitizeSimulationHtml(sanitizedHtml);
+  const scriptNonce = nonce ?? randomBytes(16).toString("base64url");
+  const $ = cheerio.load(clean, null, false);
+  $("script").each((_idx, el) => {
+    $(el).attr("nonce", scriptNonce);
+  });
+  const noncedBody = $.html();
   return `<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -867,7 +1177,7 @@ export function wrapSimulationDocument(sanitizedHtml: string, title: string): st
   }
   .sim-meta { font-size: 12px; color: var(--text-3); }
 </style>
-<script>
+<script nonce="${escapeHtml(scriptNonce)}">
   (function () {
     var t = new URLSearchParams(window.location.search).get("theme");
     document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
@@ -875,7 +1185,7 @@ export function wrapSimulationDocument(sanitizedHtml: string, title: string): st
 </script>
 </head>
 <body>
-${clean}
+${noncedBody}
 </body>
 </html>`;
 }
@@ -1045,7 +1355,8 @@ export function buildDeterministicSimulation(opts: {
     weightVal.textContent = w.toFixed(1) + "x";
     togglesEl.innerHTML = "";
     var visible = [];
-    data.items.forEach(function(item, i){
+    data.items.forEach(function(item, rawIdx){
+      var i = rawIdx | 0;
       var b = document.createElement("button");
       b.type = "button";
       b.className = "sim-btn" + (active[i] ? " is-active" : "");
@@ -1178,7 +1489,8 @@ export function buildDeterministicSimulation(opts: {
   var statusEl = document.getElementById("sim-status");
   var readout = document.getElementById("sim-readout");
   function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
-  data.params.forEach(function(p, idx){
+  data.params.forEach(function(p, rawIdx){
+    var idx = rawIdx | 0;
     var box = document.createElement("div");
     var lbl = document.createElement("div");
     lbl.className = "sim-label";
@@ -1203,7 +1515,8 @@ export function buildDeterministicSimulation(opts: {
   });
   function render(){
     var ratioSum = 0;
-    chart.innerHTML = data.params.map(function(p, idx){
+    chart.innerHTML = data.params.map(function(p, rawIdx){
+      var idx = rawIdx | 0;
       var v = vals[idx];
       document.getElementById("sim-v-" + idx).textContent = v + (p.unit ? " " + p.unit : "");
       var ratio = p.base !== 0 ? v / p.base : 1 + v / Math.max(1, p.max);
