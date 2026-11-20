@@ -1,5 +1,43 @@
 export type BlockKind = "heading" | "paragraph" | "code" | "quote" | "list" | "image" | "table";
 
+export const INTERACTIVE_BLOCK_KINDS = ["simulation", "stepper"] as const;
+export type InteractiveBlockKind = (typeof INTERACTIVE_BLOCK_KINDS)[number];
+
+export interface InteractiveStep {
+  label: string;
+  detail: string;
+  highlightToken?: string;
+}
+
+export interface InteractiveCheck {
+  question: string;
+  options: string[];
+  correctIndex: number;
+  explanation: string;
+}
+
+export interface InteractivePayload {
+  html?: string;
+  controlsSummary?: string[];
+  steps?: InteractiveStep[];
+  checks?: InteractiveCheck[];
+}
+
+export interface InteractiveBlock {
+  id: string;
+  pageId: string;
+  afterBlockId: string | null;
+  quote?: string;
+  kind: InteractiveBlockKind;
+  title: string;
+  summary: string;
+  payload: InteractivePayload;
+  state?: Record<string, unknown>;
+  source: "ai" | "deterministic";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ReaderBlock {
   id: string;
   kind: BlockKind;
@@ -80,7 +118,7 @@ export interface Folder {
 
 export interface SavedPageSummary {
   id: string;
-  sourceKind: "url" | "paste";
+  sourceKind: "url" | "paste" | "pdf";
   url?: string;
   siteName?: string;
   title: string;
@@ -89,6 +127,8 @@ export interface SavedPageSummary {
   tags: string[];
   summary?: string;
   folderId: string | null;
+  hasPdf?: boolean;
+  pdfPageCount?: number;
   annotationCount: number;
   annotatedAt?: string;
   translatedAt?: string;
@@ -101,6 +141,7 @@ export interface SavedPage extends SavedPageSummary {
   translatedTitle?: string;
   translatedBlocks?: ReaderBlock[];
   annotations: PageAnnotation[];
+  interactiveBlocks?: InteractiveBlock[];
 }
 
 export interface ExplainTopicMatch {

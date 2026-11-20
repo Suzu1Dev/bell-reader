@@ -6,10 +6,13 @@ import {
   AudioLines,
   CheckSquare,
   ChevronDown,
+  Columns2,
+  Cpu,
   ExternalLink,
   Eye,
   EyeOff,
   FileText,
+  FileUp,
   Folder as FolderIcon,
   FolderPlus,
   GitPullRequest,
@@ -17,6 +20,8 @@ import {
   Highlighter,
   Languages,
   Layers,
+  ListChecks,
+  ListTree,
   Moon,
   MoreHorizontal,
   PanelLeft,
@@ -36,6 +41,7 @@ import {
   type ExplainBridgeStatus,
   type Folder,
   type InkColor,
+  type InteractiveBlockKind,
   type ProviderSettings,
   type SavedPage,
   type SavedPageSummary,
@@ -52,7 +58,7 @@ import {
   type SuiteLinks,
   type SuiteManifest,
 } from "../shared/suite";
-import { apiAnnotateStream, apiGet, apiWrite } from "./lib/api";
+import { apiAnnotateStream, apiGet, apiUploadPdf, apiWrite } from "./lib/api";
 import SuiteSwitcher from "./components/SuiteSwitcher";
 import InkStage from "./components/InkStage";
 
@@ -232,6 +238,10 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [densityMenuOpen, setDensityMenuOpen] = useState(false);
+  const [interactiveMenuOpen, setInteractiveMenuOpen] = useState(false);
+  const [interactivePromptDraft, setInteractivePromptDraft] = useState("");
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [focusRequest, setFocusRequest] = useState<{ kind: "block" | "ann"; id: string; nonce: number } | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [scrollProgress, setScrollProgress] = useState(0);
@@ -256,9 +266,19 @@ export default function App() {
   const [annotateStage, setAnnotateStage] = useState("");
   const annotateAbortRef = useRef<AbortController | null>(null);
   const [selectionBusy, setSelectionBusy] = useState(false);
+  const [interactiveBusy, setInteractiveBusy] = useState(false);
+  const [upgradingBlockId, setUpgradingBlockId] = useState<string | null>(null);
+  const [refetching, setRefetching] = useState(false);
   const [showInk, setShowInk] = useState(true);
   const [translating, setTranslating] = useState(false);
-  const [showTranslation, setShowTranslation] = useState(false);
+  const [translationMode, setTranslationMode] = useState<"original" | "bilingual" | "translated">("original");
+  const [pdfViewMode, setPdfViewMode] = useState<"split" | "notes" | "pdf">("split");
+  const [splitPct, setSplitPct] = useState<number>(() => {
+    const raw = Number(localStorage.getItem("bell.reader.splitPct"));
+    return Number.isFinite(raw) ? Math.max(28, Math.min(72, raw)) : 46;
+  });
+  const [draggingSplit, setDraggingSplit] = useState(false);
+  const splitContainerRef = useRef<HTMLDivElement | null>(null);
   const [explainStatus, setExplainStatus] = useState<ExplainBridgeStatus>({
     status: "unconfigured",
     matches: [],
@@ -274,6 +294,9 @@ export default function App() {
   const [composerTitle, setComposerTitle] = useState("");
   const [composerFolderId, setComposerFolderId] = useState<string>("");
   const [composerBusy, setComposerBusy] = useState(false);
+  const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
+  const [composerDragOver, setComposerDragOver] = useState(false);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const [handoffDraft, setHandoffDraft] = useState<ReaderHandoffDraft | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
 
@@ -299,16 +322,22 @@ export default function App() {
   }, [readingFont]);
 
   useEffect(() => {
-    if (!moreMenuOpen && !densityMenuOpen) return;
+    localStorage.setItem("bell.reader.splitPct", String(splitPct));
+  }, [splitPct]);
+
+  useEffect(() => {
+    if (!moreMenuOpen && !densityMenuOpen && !interactiveMenuOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setMoreMenuOpen(false);
         setDensityMenuOpen(false);
+        setInteractiveMenuOpen(false);
       }
     };
     const onClick = () => {
       setMoreMenuOpen(false);
       setDensityMenuOpen(false);
+      setInteractiveMenuOpen(false);
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("click", onClick);
@@ -316,7 +345,7 @@ export default function App() {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("click", onClick);
     };
-  }, [moreMenuOpen, densityMenuOpen]);
+  }, [moreMenuOpen, densityMenuOpen, interactiveMenuOpen]);
 
   useEffect(() => {
     const onHash = () => {
@@ -431,11 +460,14 @@ export default function App() {
     if (route.kind !== "page") {
       annotateAbortRef.current?.abort();
       setActivePage(null);
+      setOutlineOpen(false);
       return;
     }
     let cancelled = false;
     setPageLoading(true);
-    setShowTranslation(false);
+    setTranslationMode("original");
+    setPdfViewMode("split");
+    setOutlineOpen(false);
     setNotice(null);
     apiGet<SavedPage>(`/api/pages/${encodeURIComponent(route.id)}`)
       .then((page) => {
@@ -465,23 +497,50 @@ export default function App() {
   }, [route.kind]);
 
   const isComposerUrl = useMemo(() => /^https?:\/\/\S+$/i.test(composerInput.trim()), [composerInput]);
+  const isComposerPdfUrl = useMemo(
+    () => isComposerUrl && /\.pdf(?:$|\?)/i.test(composerInput.trim()),
+    [composerInput, isComposerUrl],
+  );
+
+  const selectPdfFile = (file: File | null | undefined) => {
+    if (!file) return;
+    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdf) {
+      setNotice({ kind: "error", text: "只支援 .pdf 格式文件。" });
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setNotice({ kind: "error", text: "PDF 檔案超過 15 MB 上限。" });
+      return;
+    }
+    setNotice(null);
+    setPendingPdfFile(file);
+    if (!composerTitle.trim()) {
+      setComposerTitle(file.name.replace(/\.pdf$/i, "").slice(0, 120));
+    }
+  };
 
   const handleOpenOrSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!composerInput.trim() || composerBusy) return;
+    if ((!composerInput.trim() && !pendingPdfFile) || composerBusy) return;
     setComposerBusy(true);
     setNotice(null);
     try {
-      const trimmed = composerInput.trim();
-      const res = await apiWrite<{ page: SavedPage; reused: boolean }>("POST", "/api/pages", {
-        ...(isComposerUrl ? { url: trimmed } : { content: composerInput }),
-        ...(composerTitle.trim() ? { title: composerTitle.trim() } : {}),
-        folderId: composerFolderId || null,
-      });
+      const res = pendingPdfFile
+        ? await apiUploadPdf<{ page: SavedPage; reused: boolean }>(pendingPdfFile, {
+            title: composerTitle.trim() || undefined,
+            folderId: composerFolderId || null,
+          })
+        : await apiWrite<{ page: SavedPage; reused: boolean }>("POST", "/api/pages", {
+            ...(isComposerUrl ? { url: composerInput.trim() } : { content: composerInput }),
+            ...(composerTitle.trim() ? { title: composerTitle.trim() } : {}),
+            folderId: composerFolderId || null,
+          });
       sessionStorage.removeItem(HANDOFF_STORAGE_KEY);
       setHandoffDraft(null);
       setComposerInput("");
       setComposerTitle("");
+      setPendingPdfFile(null);
       await loadLibrary();
       if (res.reused) {
         setNotice({ kind: "info", text: "此網址已保存在書庫中，已直接載入既有頁面與標註（不重複消耗 Token）。" });
@@ -546,7 +605,7 @@ export default function App() {
   const handleTranslatePage = async (force = false) => {
     if (!activePage || translating) return;
     if (activePage.translatedBlocks && !force) {
-      setShowTranslation((v) => !v);
+      setTranslationMode((cur) => (cur === "original" ? "bilingual" : cur === "bilingual" ? "translated" : "original"));
       return;
     }
     setTranslating(true);
@@ -557,7 +616,7 @@ export default function App() {
         `/api/pages/${encodeURIComponent(activePage.id)}/translate`,
       );
       setActivePage(res.page);
-      setShowTranslation(true);
+      setTranslationMode("bilingual");
       await loadLibrary();
     } catch (err) {
       setNotice({ kind: "error", text: err instanceof Error ? err.message : "翻譯失敗，請重試。" });
@@ -566,7 +625,97 @@ export default function App() {
     }
   };
 
-  const isTranslatedView = Boolean(showTranslation && activePage?.translatedBlocks);
+  const handleRefetchPage = async () => {
+    if (!activePage?.url || refetching) return;
+    setRefetching(true);
+    setNotice(null);
+    try {
+      const res = await apiWrite<{ page: SavedPage }>(
+        "POST",
+        `/api/pages/${encodeURIComponent(activePage.id)}/refetch`,
+      );
+      setActivePage(res.page);
+      setTranslationMode("original");
+      await loadLibrary();
+      setNotice({ kind: "info", text: "已重新擷取最新原文並保留你的互動區塊與筆記。" });
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : "重新擷取失敗。" });
+    } finally {
+      setRefetching(false);
+    }
+  };
+
+  const handleCreateInteractiveBlock = async (opts: {
+    afterBlockId: string | null;
+    quote?: string;
+    kind: InteractiveBlockKind;
+    prompt?: string;
+  }) => {
+    if (!activePage || interactiveBusy) return;
+    setInteractiveBusy(true);
+    setNotice(null);
+    try {
+      const res = await apiWrite<{ page: SavedPage }>(
+        "POST",
+        `/api/pages/${encodeURIComponent(activePage.id)}/interactive-blocks`,
+        opts,
+      );
+      setActivePage(res.page);
+      await loadLibrary();
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : "無法建立互動區塊。" });
+    } finally {
+      setInteractiveBusy(false);
+    }
+  };
+
+  const handleUpdateInteractiveState = async (blockId: string, state: Record<string, unknown>) => {
+    if (!activePage) return;
+    try {
+      const res = await apiWrite<{ page: SavedPage }>(
+        "PATCH",
+        `/api/pages/${encodeURIComponent(activePage.id)}/interactive-blocks/${encodeURIComponent(blockId)}`,
+        { state },
+      );
+      setActivePage(res.page);
+    } catch {
+      // Non-fatal state sync
+    }
+  };
+
+  const handleUpgradeInteractiveBlock = async (blockId: string) => {
+    if (!activePage || upgradingBlockId) return;
+    setUpgradingBlockId(blockId);
+    setNotice(null);
+    try {
+      const res = await apiWrite<{ page: SavedPage }>(
+        "POST",
+        `/api/pages/${encodeURIComponent(activePage.id)}/interactive-blocks/${encodeURIComponent(blockId)}/upgrade`,
+      );
+      setActivePage(res.page);
+      await loadLibrary();
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : "AI 深化失敗，保留即時互動版本。" });
+    } finally {
+      setUpgradingBlockId(null);
+    }
+  };
+
+  const handleDeleteInteractiveBlock = async (blockId: string) => {
+    if (!activePage) return;
+    try {
+      const res = await apiWrite<{ page: SavedPage }>(
+        "DELETE",
+        `/api/pages/${encodeURIComponent(activePage.id)}/interactive-blocks/${encodeURIComponent(blockId)}`,
+      );
+      if (res.page) setActivePage(res.page);
+      await loadLibrary();
+    } catch (err) {
+      setNotice({ kind: "error", text: err instanceof Error ? err.message : "無法刪除互動區塊。" });
+    }
+  };
+
+  const isTranslatedView = Boolean(translationMode === "translated" && activePage?.translatedBlocks);
   const displayPage = useMemo(() => {
     if (!activePage) return null;
     if (!isTranslatedView || !activePage.translatedBlocks) return activePage;
@@ -576,6 +725,12 @@ export default function App() {
       blocks: activePage.translatedBlocks,
     };
   }, [activePage, isTranslatedView]);
+
+  const activeHasPdf = Boolean(activePage && (activePage.hasPdf || activePage.sourceKind === "pdf"));
+  const outlineHeadings = useMemo(
+    () => (activePage ? activePage.blocks.filter((b) => b.kind === "heading") : []),
+    [activePage],
+  );
 
   const handleCreateFolder = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -991,30 +1146,149 @@ export default function App() {
             {route.kind === "page" && activePage && (
               <>
                 <div className="reader-quiet-group" role="group" aria-label="閱讀選項">
+                  {activeHasPdf ? (
+                    <div className="segmented-pill" role="group" aria-label="PDF 檢視模式">
+                      {(
+                        [
+                          ["split", "並排"],
+                          ["notes", "筆記"],
+                          ["pdf", "PDF"],
+                        ] as const
+                      ).map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          className={`segmented-pill-btn ${pdfViewMode === mode ? "is-active" : ""}`}
+                          aria-pressed={pdfViewMode === mode}
+                          onClick={() => setPdfViewMode(mode)}
+                        >
+                          {mode === "split" ? <Columns2 size={12} aria-hidden="true" /> : null}
+                          <span>{label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {activePage.translatedBlocks ? (
+                    <div className="segmented-pill" role="group" aria-label="翻譯檢視模式">
+                      {(
+                        [
+                          ["original", "原文"],
+                          ["bilingual", "並排"],
+                          ["translated", "譯文"],
+                        ] as const
+                      ).map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          className={`segmented-pill-btn ${translationMode === mode ? "is-active" : ""}`}
+                          aria-pressed={translationMode === mode}
+                          onClick={() => setTranslationMode(mode)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="icon-ghost-btn"
+                      disabled={translating}
+                      onClick={() => void handleTranslatePage(false)}
+                      title="全文翻譯成台灣繁體中文（保留程式碼與專有名詞原文）"
+                    >
+                      <Languages size={14} className={translating ? "spin" : ""} aria-hidden="true" />
+                      <span>{translating ? "翻譯中…" : "繁中翻譯"}</span>
+                    </button>
+                  )}
+
+                  <div className="more-menu-wrap" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="icon-ghost-btn is-interactive-trigger"
+                      disabled={interactiveBusy}
+                      aria-expanded={interactiveMenuOpen}
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        setDensityMenuOpen(false);
+                        setInteractiveMenuOpen((v) => !v);
+                      }}
+                      title="為目前文章建立可操作的互動模擬或概念步進測驗"
+                    >
+                      <Plus size={14} aria-hidden="true" />
+                      <span>互動區塊</span>
+                    </button>
+                    {interactiveMenuOpen ? (
+                      <div className="interactive-popover" role="dialog" aria-label="新增互動區塊">
+                        <div className="interactive-popover-head">針對目前閱讀內容新增互動</div>
+                        <input
+                          type="text"
+                          className="interactive-popover-input"
+                          value={interactivePromptDraft}
+                          onChange={(e) => setInteractivePromptDraft(e.target.value)}
+                          placeholder="選填想模擬的主題或概念…"
+                          aria-label="互動主題提示"
+                          maxLength={120}
+                        />
+                        <div className="interactive-popover-actions">
+                          <button
+                            type="button"
+                            className="btn-primary is-compact"
+                            disabled={interactiveBusy}
+                            onClick={async () => {
+                              const firstContentBlock =
+                                activePage.blocks.find((b) => b.kind !== "heading" && b.kind !== "image") ??
+                                activePage.blocks[0];
+                              const prompt = interactivePromptDraft.trim();
+                              setInteractiveMenuOpen(false);
+                              setInteractivePromptDraft("");
+                              await handleCreateInteractiveBlock({
+                                afterBlockId: firstContentBlock?.id ?? null,
+                                quote: firstContentBlock?.text.slice(0, 140),
+                                kind: "simulation",
+                                ...(prompt ? { prompt } : {}),
+                              });
+                            }}
+                          >
+                            <Cpu size={13} aria-hidden="true" />
+                            <span>互動模擬</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary is-compact"
+                            disabled={interactiveBusy}
+                            onClick={async () => {
+                              const firstContentBlock =
+                                activePage.blocks.find((b) => b.kind !== "heading" && b.kind !== "image") ??
+                                activePage.blocks[0];
+                              const prompt = interactivePromptDraft.trim();
+                              setInteractiveMenuOpen(false);
+                              setInteractivePromptDraft("");
+                              await handleCreateInteractiveBlock({
+                                afterBlockId: firstContentBlock?.id ?? null,
+                                quote: firstContentBlock?.text.slice(0, 140),
+                                kind: "stepper",
+                                ...(prompt ? { prompt } : {}),
+                              });
+                            }}
+                          >
+                            <ListChecks size={13} aria-hidden="true" />
+                            <span>概念步進</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+
                   <button
                     type="button"
-                    className="icon-ghost-btn"
-                    disabled={translating}
-                    aria-pressed={isTranslatedView}
-                    onClick={() => void handleTranslatePage(false)}
-                    title={
-                      activePage.translatedBlocks
-                        ? isTranslatedView
-                          ? "切換回原文對照"
-                          : "顯示台灣繁體中文譯文"
-                        : "全文翻譯成台灣繁體中文（保留程式碼與專有名詞原文）"
-                    }
+                    className={`icon-ghost-btn ${outlineOpen ? "is-active" : ""}`}
+                    aria-pressed={outlineOpen}
+                    onClick={() => setOutlineOpen((v) => !v)}
+                    title="開啟大綱與閱讀筆跡導覽"
                   >
-                    <Languages size={14} className={translating ? "spin" : ""} aria-hidden="true" />
-                    <span>
-                      {translating
-                        ? "翻譯中…"
-                        : activePage.translatedBlocks
-                          ? isTranslatedView
-                            ? "看原文"
-                            : "看譯文"
-                          : "繁中翻譯"}
-                    </span>
+                    <ListTree size={14} aria-hidden="true" />
+                    <span>大綱</span>
                   </button>
 
                   <button
@@ -1064,17 +1338,32 @@ export default function App() {
                     {moreMenuOpen ? (
                       <div className="more-popover" role="menu">
                         {activePage.url ? (
-                          <a
-                            href={activePage.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="more-menu-item"
-                            role="menuitem"
-                            onClick={() => setMoreMenuOpen(false)}
-                          >
-                            <ExternalLink size={13} aria-hidden="true" />
-                            <span>開啟原始網頁</span>
-                          </a>
+                          <>
+                            <a
+                              href={activePage.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="more-menu-item"
+                              role="menuitem"
+                              onClick={() => setMoreMenuOpen(false)}
+                            >
+                              <ExternalLink size={13} aria-hidden="true" />
+                              <span>開啟原始網頁</span>
+                            </a>
+                            <button
+                              type="button"
+                              className="more-menu-item"
+                              role="menuitem"
+                              disabled={refetching}
+                              onClick={() => {
+                                setMoreMenuOpen(false);
+                                void handleRefetchPage();
+                              }}
+                            >
+                              <RefreshCw size={13} className={refetching ? "spin" : ""} aria-hidden="true" />
+                              <span>{refetching ? "重新擷取中…" : "重新擷取網頁原文"}</span>
+                            </button>
+                          </>
                         ) : null}
                         {pageToPersonalHref ? (
                           <a
@@ -1235,17 +1524,17 @@ export default function App() {
             <section className="composer-card">
               <div className="composer-header">
                 <div>
-                  <span className="composer-kicker">閱讀書桌 · 永久保存與原位批註</span>
+                  <span className="composer-kicker">閱讀書桌 · 永久保存、PDF 並排與原位批註</span>
                   <h1>
                     {handoffDraft
                       ? `來自 ${APP_NAMES[handoffDraft.from]}`
-                      : "貼上網址或文章內容"}
+                      : "貼上網址、文章或上傳 PDF"}
                   </h1>
                   {handoffDraft?.truncated ? (
                     <p className="composer-sub">內容過長，已截斷為前 2,000 字</p>
                   ) : null}
                 </div>
-                {!composerInput ? (
+                {!composerInput && !pendingPdfFile ? (
                   <button
                     type="button"
                     className="btn-secondary"
@@ -1259,13 +1548,50 @@ export default function App() {
                   </button>
                 ) : (
                   <span className="composer-mode-pill">
-                    {isComposerUrl ? <Globe size={13} /> : <FileText size={13} />}
-                    <span>{isComposerUrl ? "網址模式 · 自動擷取正文" : "筆記模式 · 支援 Markdown"}</span>
+                    {pendingPdfFile || isComposerPdfUrl ? (
+                      <FileUp size={13} />
+                    ) : isComposerUrl ? (
+                      <Globe size={13} />
+                    ) : (
+                      <FileText size={13} />
+                    )}
+                    <span>
+                      {pendingPdfFile || isComposerPdfUrl
+                        ? "PDF 文件模式 · 並排閱讀"
+                        : isComposerUrl
+                          ? "網址模式 · 自動擷取正文"
+                          : "筆記模式 · 支援 Markdown"}
+                    </span>
                   </span>
                 )}
               </div>
 
-              <form onSubmit={handleOpenOrSave} className="composer-form">
+              <form
+                onSubmit={handleOpenOrSave}
+                className={`composer-form ${composerDragOver ? "is-dragover" : ""}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setComposerDragOver(true);
+                }}
+                onDragLeave={() => setComposerDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setComposerDragOver(false);
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) selectPdfFile(file);
+                }}
+              >
+                <input
+                  ref={pdfInputRef}
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  hidden
+                  aria-label="選擇 PDF 檔案"
+                  onChange={(e) => {
+                    selectPdfFile(e.target.files?.[0]);
+                    e.target.value = "";
+                  }}
+                />
                 <input
                   type="text"
                   className="composer-title-input"
@@ -1275,30 +1601,60 @@ export default function App() {
                   aria-label="標題"
                   maxLength={120}
                 />
-                <textarea
-                  className="composer-textarea"
-                  value={composerInput}
-                  onChange={(e) => setComposerInput(e.target.value)}
-                  placeholder="貼上 https:// 網頁網址，或直接貼上文章、技術文件、程式碼段落…"
-                  aria-label="網址或閱讀內容"
-                  rows={6}
-                />
-                <div className="composer-footer">
-                  <label className="folder-select-wrap">
-                    <FolderIcon size={14} aria-hidden="true" />
-                    <select
-                      value={composerFolderId}
-                      onChange={(e) => setComposerFolderId(e.target.value)}
-                      aria-label="選擇保存資料夾"
+                {pendingPdfFile ? (
+                  <div className="composer-pdf-chip">
+                    <FileUp size={15} aria-hidden="true" />
+                    <span className="composer-pdf-name">
+                      <bdi>{pendingPdfFile.name}</bdi>
+                    </span>
+                    <span className="composer-pdf-size">
+                      {(pendingPdfFile.size / (1024 * 1024)).toFixed(2)} MB
+                    </span>
+                    <button
+                      type="button"
+                      className="icon-ghost-btn is-xs"
+                      aria-label="移除 PDF"
+                      onClick={() => setPendingPdfFile(null)}
                     >
-                      <option value="">自動／暫不指定資料夾</option>
-                      {folders.map((f) => (
-                        <option key={f.id} value={f.id}>
-                          {f.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      <X size={13} aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : (
+                  <textarea
+                    className="composer-textarea"
+                    value={composerInput}
+                    onChange={(e) => setComposerInput(e.target.value)}
+                    placeholder="貼上 https:// 網頁或 PDF 網址，拖曳 .pdf 檔案至此，或直接貼上文章／程式碼…"
+                    aria-label="網址或閱讀內容"
+                    rows={6}
+                  />
+                )}
+                <div className="composer-footer">
+                  <div className="composer-footer-left">
+                    <label className="folder-select-wrap">
+                      <FolderIcon size={14} aria-hidden="true" />
+                      <select
+                        value={composerFolderId}
+                        onChange={(e) => setComposerFolderId(e.target.value)}
+                        aria-label="選擇保存資料夾"
+                      >
+                        <option value="">自動／暫不指定資料夾</option>
+                        {folders.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="btn-secondary is-compact"
+                      onClick={() => pdfInputRef.current?.click()}
+                    >
+                      <FileUp size={13} aria-hidden="true" />
+                      <span>上傳 PDF</span>
+                    </button>
+                  </div>
                   <div className="composer-actions">
                     {handoffDraft ? (
                       <button
@@ -1318,7 +1674,7 @@ export default function App() {
                     <button
                       type="submit"
                       className="btn-primary"
-                      disabled={!composerInput.trim() || composerBusy}
+                      disabled={(!composerInput.trim() && !pendingPdfFile) || composerBusy}
                     >
                       {composerBusy ? "擷取保存中…" : "保存並開始閱讀"}
                     </button>
@@ -1433,7 +1789,7 @@ export default function App() {
         )}
 
         {route.kind === "page" && (
-          <div className="reader-view-wrap">
+          <div className={`reader-view-wrap ${activeHasPdf && pdfViewMode === "split" ? "is-split" : ""} ${draggingSplit ? "is-dragging-split" : ""}`}>
             {pageLoading ? (
               <div className="empty-box">
                 <p>載入頁面中…</p>
@@ -1470,118 +1826,323 @@ export default function App() {
                   ) : null}
                 </AnimatePresence>
 
-                <header className="reader-doc-header">
-                  <div className="reader-doc-source">
-                    {activePage.siteName ? (
-                      <span className="source-domain-chip">
-                        <Globe size={12} aria-hidden="true" />
-                        <span>{activePage.siteName}</span>
+                {activeHasPdf && pdfViewMode === "pdf" ? (
+                  <section className="reader-pdf-pane is-solo" aria-label="PDF 原檔檢視">
+                    <div className="pdf-pane-bar">
+                      <span className="pdf-pane-title">
+                        <FileText size={13} aria-hidden="true" />
+                        <bdi>{activePage.title}</bdi>
+                        {activePage.pdfPageCount ? (
+                          <span className="pdf-page-count">{activePage.pdfPageCount} 頁</span>
+                        ) : null}
                       </span>
-                    ) : (
-                      <span className="source-domain-chip">
-                        <FileText size={12} aria-hidden="true" />
-                        <span>保存筆記</span>
-                      </span>
-                    )}
-                    {activePage.url ? (
                       <a
-                        href={activePage.url}
+                        href={`/api/pages/${encodeURIComponent(activePage.id)}/pdf`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="source-ext-link"
+                        className="pdf-pane-link"
                       >
-                        <span>原始網頁</span>
+                        <span>新分頁開啟</span>
                         <ExternalLink size={12} aria-hidden="true" />
                       </a>
-                    ) : null}
-                  </div>
-                  <h1>
-                    <bdi>{displayPage?.title ?? activePage.title}</bdi>
-                  </h1>
-
-                  {explainStatus.matches.length > 0 && explainOrigin ? (
-                    <div className="explain-matches-bar">
-                      <span className="explain-bar-label">
-                        <AudioLines size={13} aria-hidden="true" />
-                        <span>BELL Explain 相關主題筆記：</span>
-                      </span>
-                      {explainStatus.matches.map((m) => (
-                        <a
-                          key={m.id}
-                          href={`${explainOrigin}/${m.href}`}
-                          className="btn-explain-chip"
-                          title={m.reason}
-                        >
-                          <span>
-                            <bdi>{m.title}</bdi>
-                          </span>
-                        </a>
-                      ))}
                     </div>
-                  ) : null}
-                </header>
+                    <iframe
+                      className="reader-pdf-frame"
+                      src={`/api/pages/${encodeURIComponent(activePage.id)}/pdf`}
+                      title={`${activePage.title} PDF`}
+                    />
+                  </section>
+                ) : (
+                  <div
+                    ref={splitContainerRef}
+                    className={activeHasPdf && pdfViewMode === "split" ? "reader-split-layout" : "reader-single-layout"}
+                    style={
+                      activeHasPdf && pdfViewMode === "split"
+                        ? ({ "--split-left": `${splitPct}%` } as React.CSSProperties)
+                        : undefined
+                    }
+                  >
+                    {activeHasPdf && pdfViewMode === "split" ? (
+                      <>
+                        <section className="reader-pdf-pane" aria-label="PDF 原檔">
+                          <div className="pdf-pane-bar">
+                            <span className="pdf-pane-title">
+                              <FileText size={13} aria-hidden="true" />
+                              <bdi>{activePage.title}</bdi>
+                              {activePage.pdfPageCount ? (
+                                <span className="pdf-page-count">{activePage.pdfPageCount} 頁</span>
+                              ) : null}
+                            </span>
+                            <a
+                              href={`/api/pages/${encodeURIComponent(activePage.id)}/pdf`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="pdf-pane-link"
+                            >
+                              <span>新分頁</span>
+                              <ExternalLink size={12} aria-hidden="true" />
+                            </a>
+                          </div>
+                          <iframe
+                            className="reader-pdf-frame"
+                            src={`/api/pages/${encodeURIComponent(activePage.id)}/pdf`}
+                            title={`${activePage.title} PDF`}
+                          />
+                        </section>
 
-                <InkStage
-                  page={displayPage ?? activePage}
-                  showInk={showInk}
-                  isTranslatedView={isTranslatedView}
-                  readingFont={readingFont}
-                  explainOrigin={explainOrigin}
-                  selectionBusy={selectionBusy}
-                  onAiSelection={async (sel) => {
-                    setSelectionBusy(true);
-                    setNotice(null);
-                    try {
-                      const res = await apiWrite<{ page: SavedPage }>(
-                        "POST",
-                        `/api/pages/${encodeURIComponent(activePage.id)}/annotate-selection`,
-                        sel,
-                      );
-                      setActivePage(res.page);
-                      setShowInk(true);
-                      await loadLibrary();
-                    } catch (err) {
-                      setNotice({
-                        kind: "error",
-                        text: err instanceof Error ? err.message : "選取標註失敗。",
-                      });
-                    } finally {
-                      setSelectionBusy(false);
-                    }
-                  }}
-                  onManualSelection={async (sel) => {
-                    try {
-                      const res = await apiWrite<{ page: SavedPage }>(
-                        "POST",
-                        `/api/pages/${encodeURIComponent(activePage.id)}/annotations`,
-                        sel,
-                      );
-                      setActivePage(res.page);
-                      setShowInk(true);
-                      await loadLibrary();
-                    } catch (err) {
-                      setNotice({
-                        kind: "error",
-                        text: err instanceof Error ? err.message : "無法儲存批註。",
-                      });
-                    }
-                  }}
-                  onDeleteAnnotation={async (annotationId) => {
-                    try {
-                      const res = await apiWrite<{ page: SavedPage }>(
-                        "DELETE",
-                        `/api/pages/${encodeURIComponent(activePage.id)}/annotations/${encodeURIComponent(annotationId)}`,
-                      );
-                      if (res.page) setActivePage(res.page);
-                      await loadLibrary();
-                    } catch (err) {
-                      setNotice({
-                        kind: "error",
-                        text: err instanceof Error ? err.message : "無法刪除標註。",
-                      });
-                    }
-                  }}
-                />
+                        <div
+                          className="split-resizer"
+                          role="separator"
+                          aria-orientation="vertical"
+                          aria-label="調整 PDF 與筆記欄寬"
+                          aria-valuemin={28}
+                          aria-valuemax={72}
+                          aria-valuenow={Math.round(splitPct)}
+                          tabIndex={0}
+                          onPointerDown={(e) => {
+                            e.preventDefault();
+                            const target = e.currentTarget;
+                            target.setPointerCapture(e.pointerId);
+                            setDraggingSplit(true);
+                            const onMove = (ev: PointerEvent) => {
+                              const rect = splitContainerRef.current?.getBoundingClientRect();
+                              if (!rect || rect.width < 200) return;
+                              const next = ((ev.clientX - rect.left) / rect.width) * 100;
+                              setSplitPct(Math.max(28, Math.min(72, Number(next.toFixed(1)))));
+                            };
+                            const onUp = () => {
+                              setDraggingSplit(false);
+                              target.removeEventListener("pointermove", onMove);
+                              target.removeEventListener("pointerup", onUp);
+                              target.removeEventListener("pointercancel", onUp);
+                            };
+                            target.addEventListener("pointermove", onMove);
+                            target.addEventListener("pointerup", onUp);
+                            target.addEventListener("pointercancel", onUp);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "ArrowLeft") {
+                              e.preventDefault();
+                              setSplitPct((p) => Math.max(28, p - 2));
+                            } else if (e.key === "ArrowRight") {
+                              e.preventDefault();
+                              setSplitPct((p) => Math.min(72, p + 2));
+                            }
+                          }}
+                        />
+                      </>
+                    ) : null}
+
+                    <div className="reader-notes-pane">
+                      <header className="reader-doc-header">
+                        <div className="reader-doc-source">
+                          {activePage.siteName ? (
+                            <span className="source-domain-chip">
+                              <Globe size={12} aria-hidden="true" />
+                              <span>{activePage.siteName}</span>
+                            </span>
+                          ) : (
+                            <span className="source-domain-chip">
+                              <FileText size={12} aria-hidden="true" />
+                              <span>保存筆記</span>
+                            </span>
+                          )}
+                          {activePage.url ? (
+                            <a
+                              href={activePage.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="source-ext-link"
+                            >
+                              <span>原始網頁</span>
+                              <ExternalLink size={12} aria-hidden="true" />
+                            </a>
+                          ) : null}
+                        </div>
+                        <h1>
+                          <bdi>{displayPage?.title ?? activePage.title}</bdi>
+                        </h1>
+
+                        {explainStatus.matches.length > 0 && explainOrigin ? (
+                          <div className="explain-matches-bar">
+                            <span className="explain-bar-label">
+                              <AudioLines size={13} aria-hidden="true" />
+                              <span>BELL Explain 相關主題筆記：</span>
+                            </span>
+                            {explainStatus.matches.map((m) => (
+                              <a
+                                key={m.id}
+                                href={`${explainOrigin}/${m.href}`}
+                                className="btn-explain-chip"
+                                title={m.reason}
+                              >
+                                <span>
+                                  <bdi>{m.title}</bdi>
+                                </span>
+                              </a>
+                            ))}
+                          </div>
+                        ) : null}
+                      </header>
+
+                      <InkStage
+                        page={translationMode === "bilingual" ? activePage : (displayPage ?? activePage)}
+                        theme={theme}
+                        showInk={showInk}
+                        translationMode={activePage.translatedBlocks ? translationMode : "original"}
+                        translatedBlocks={activePage.translatedBlocks}
+                        readingFont={readingFont}
+                        explainOrigin={explainOrigin}
+                        selectionBusy={selectionBusy}
+                        interactiveBusy={interactiveBusy}
+                        upgradingBlockId={upgradingBlockId}
+                        focusRequest={focusRequest}
+                        onAiSelection={async (sel) => {
+                          setSelectionBusy(true);
+                          setNotice(null);
+                          try {
+                            const res = await apiWrite<{ page: SavedPage }>(
+                              "POST",
+                              `/api/pages/${encodeURIComponent(activePage.id)}/annotate-selection`,
+                              sel,
+                            );
+                            setActivePage(res.page);
+                            setShowInk(true);
+                            await loadLibrary();
+                          } catch (err) {
+                            setNotice({
+                              kind: "error",
+                              text: err instanceof Error ? err.message : "選取標註失敗。",
+                            });
+                          } finally {
+                            setSelectionBusy(false);
+                          }
+                        }}
+                        onManualSelection={async (sel) => {
+                          try {
+                            const res = await apiWrite<{ page: SavedPage }>(
+                              "POST",
+                              `/api/pages/${encodeURIComponent(activePage.id)}/annotations`,
+                              sel,
+                            );
+                            setActivePage(res.page);
+                            setShowInk(true);
+                            await loadLibrary();
+                          } catch (err) {
+                            setNotice({
+                              kind: "error",
+                              text: err instanceof Error ? err.message : "無法儲存批註。",
+                            });
+                          }
+                        }}
+                        onUpdateAnnotation={async (annotationId, patch) => {
+                          try {
+                            const res = await apiWrite<{ page: SavedPage }>(
+                              "PATCH",
+                              `/api/pages/${encodeURIComponent(activePage.id)}/annotations/${encodeURIComponent(annotationId)}`,
+                              patch,
+                            );
+                            setActivePage(res.page);
+                            await loadLibrary();
+                          } catch (err) {
+                            setNotice({
+                              kind: "error",
+                              text: err instanceof Error ? err.message : "無法更新標註。",
+                            });
+                          }
+                        }}
+                        onDeleteAnnotation={async (annotationId) => {
+                          try {
+                            const res = await apiWrite<{ page: SavedPage }>(
+                              "DELETE",
+                              `/api/pages/${encodeURIComponent(activePage.id)}/annotations/${encodeURIComponent(annotationId)}`,
+                            );
+                            if (res.page) setActivePage(res.page);
+                            await loadLibrary();
+                          } catch (err) {
+                            setNotice({
+                              kind: "error",
+                              text: err instanceof Error ? err.message : "無法刪除標註。",
+                            });
+                          }
+                        }}
+                        onCreateInteractiveBlock={handleCreateInteractiveBlock}
+                        onUpdateInteractiveState={handleUpdateInteractiveState}
+                        onUpgradeInteractiveBlock={handleUpgradeInteractiveBlock}
+                        onDeleteInteractiveBlock={handleDeleteInteractiveBlock}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {outlineOpen ? (
+                  <aside className="reader-outline-drawer" aria-label="文章大綱與閱讀筆跡">
+                    <div className="outline-drawer-head">
+                      <span>大綱與筆跡</span>
+                      <button
+                        type="button"
+                        className="icon-ghost-btn is-xs"
+                        aria-label="關閉大綱面板"
+                        onClick={() => setOutlineOpen(false)}
+                      >
+                        <X size={14} aria-hidden="true" />
+                      </button>
+                    </div>
+                    <div className="outline-drawer-body">
+                      <section className="outline-section">
+                        <h4>段落大綱（{outlineHeadings.length}）</h4>
+                        {outlineHeadings.length === 0 ? (
+                          <p className="outline-empty">此文件沒有顯式標題區塊。</p>
+                        ) : (
+                          <div className="outline-list">
+                            {outlineHeadings.map((h) => (
+                              <button
+                                key={h.id}
+                                type="button"
+                                className={`outline-item level-${h.level ?? 2}`}
+                                onClick={() => {
+                                  setFocusRequest({ kind: "block", id: h.id, nonce: Date.now() });
+                                  if (window.matchMedia("(max-width: 900px)").matches) setOutlineOpen(false);
+                                }}
+                              >
+                                <bdi>{h.text}</bdi>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                      <section className="outline-section">
+                        <h4>閱讀筆跡（{activePage.annotations.length}）</h4>
+                        {activePage.annotations.length === 0 ? (
+                          <p className="outline-empty">尚未建立手寫或 AI 標註。</p>
+                        ) : (
+                          <div className="outline-list">
+                            {activePage.annotations.map((ann) => (
+                              <button
+                                key={ann.id}
+                                type="button"
+                                className="outline-ann-item"
+                                onClick={() => {
+                                  setShowInk(true);
+                                  setFocusRequest({ kind: "ann", id: ann.id, nonce: Date.now() });
+                                  if (window.matchMedia("(max-width: 900px)").matches) setOutlineOpen(false);
+                                }}
+                              >
+                                <span className={`outline-ann-dot dot-${ann.color}`} />
+                                <span className="outline-ann-copy">
+                                  <strong>{ann.label || ann.topic || "標註"}</strong>
+                                  <small>
+                                    <bdi>{ann.note}</bdi>
+                                  </small>
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    </div>
+                  </aside>
+                ) : null}
               </>
             ) : null}
           </div>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { AudioLines, Braces, Circle, Highlighter, PenLine, Sparkles, Trash2, Underline, X } from "lucide-react";
+import { AudioLines, Braces, Circle, Cpu, Highlighter, ListChecks, Pencil, PenLine, Plus, Sparkles, Trash2, Underline, X } from "lucide-react";
 import {
   INK_COLORS,
   SKETCH_CURVE_SHAPES,
@@ -7,6 +7,8 @@ import {
   type AnnotationSketch,
   type InkColor,
   type InkStyle,
+  type InteractiveBlock,
+  type InteractiveBlockKind,
   type PageAnnotation,
   type ReaderBlock,
   type SavedPage,
@@ -15,6 +17,7 @@ import {
 } from "../../shared/types";
 import { explainDraftHref } from "../../shared/suite";
 import HandSketch from "./HandSketch";
+import InteractiveBlockCard from "./InteractiveBlockCard";
 import {
   bracketPath,
   handBoxPath,
@@ -275,6 +278,7 @@ function PenNote({
   pageId,
   pageTitle,
   onActivate,
+  onUpdate,
   onDelete,
   stylePos,
   noteRef,
@@ -286,10 +290,38 @@ function PenNote({
   pageId: string;
   pageTitle: string;
   onActivate: () => void;
+  onUpdate: (id: string, patch: { note: string; label?: string }) => Promise<void>;
   onDelete: (id: string) => void;
   stylePos?: { top?: number; left?: number; maxWidth?: number };
   noteRef?: (el: HTMLElement | null) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draftNote, setDraftNote] = useState(annotation.note);
+  const [draftLabel, setDraftLabel] = useState(annotation.label ?? "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!editing) {
+      setDraftNote(annotation.note);
+      setDraftLabel(annotation.label ?? "");
+    }
+  }, [annotation.note, annotation.label, editing]);
+
+  const submitEdit = async () => {
+    const clean = draftNote.trim();
+    if (!clean || saving) return;
+    setSaving(true);
+    try {
+      await onUpdate(annotation.id, {
+        note: clean,
+        ...(draftLabel.trim() ? { label: draftLabel.trim() } : {}),
+      });
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const explainHref = useMemo(
     () =>
       explainDraftHref(
@@ -332,6 +364,18 @@ function PenNote({
           {annotation.topic ? ` · ${annotation.topic}` : ""}
         </span>
         <span className="pen-note-actions">
+          <button
+            type="button"
+            className="pen-note-btn"
+            aria-label="編輯筆記"
+            title="編輯筆記（或雙擊筆記文字）"
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditing((v) => !v);
+            }}
+          >
+            <Pencil size={11} aria-hidden="true" />
+          </button>
           {explainHref ? (
             <a
               href={explainHref}
@@ -358,9 +402,63 @@ function PenNote({
           </button>
         </span>
       </div>
-      <p className="pen-note-body">
-        <bdi>{annotation.note}</bdi>
-      </p>
+      {editing ? (
+        <form
+          className="pen-edit-form"
+          onClick={(e) => e.stopPropagation()}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitEdit();
+          }}
+        >
+          <input
+            type="text"
+            className="pen-edit-label"
+            value={draftLabel}
+            onChange={(e) => setDraftLabel(e.target.value)}
+            placeholder="標籤（選填）"
+            aria-label="標註標籤"
+            maxLength={16}
+          />
+          <textarea
+            className="pen-edit-textarea"
+            value={draftNote}
+            onChange={(e) => setDraftNote(e.target.value)}
+            aria-label="編輯筆記內容"
+            rows={2}
+            maxLength={320}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                setEditing(false);
+              } else if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submitEdit();
+              }
+            }}
+          />
+          <div className="pen-edit-actions">
+            <button type="button" className="pen-note-btn" onClick={() => setEditing(false)}>
+              取消
+            </button>
+            <button type="submit" className="pen-note-btn is-save" disabled={saving || !draftNote.trim()}>
+              {saving ? "儲存中…" : "儲存"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <p
+          className="pen-note-body"
+          title="雙擊編輯筆記"
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            setEditing(true);
+          }}
+        >
+          <bdi>{annotation.note}</bdi>
+        </p>
+      )}
       {mode === "under-block" && annotation.sketch ? (
         <div className="pen-note-quote-ref" title={annotation.quote}>
           「{annotation.quote.length > 26 ? `${annotation.quote.slice(0, 26)}…` : annotation.quote}」
@@ -443,23 +541,106 @@ function arrowEndpoints(
   };
 }
 
+function renderPlainTranslatedBlock(block: ReaderBlock): ReactNode {
+  if (block.kind === "heading") {
+    const Tag = block.level === 1 ? "h2" : block.level === 2 ? "h3" : "h4";
+    return <Tag className={`reader-heading level-${block.level ?? 2}`}>{block.text}</Tag>;
+  }
+  if (block.kind === "code") {
+    return (
+      <pre className="reader-code-wrap">
+        {block.language ? <span className="reader-code-lang">{block.language}</span> : null}
+        <code className="reader-code">{block.text}</code>
+      </pre>
+    );
+  }
+  if (block.kind === "quote") {
+    return <blockquote className="reader-quote">{block.text}</blockquote>;
+  }
+  if (block.kind === "list") {
+    return (
+      <div className="reader-list-item">
+        <span className="reader-bullet" aria-hidden="true" />
+        <div className="reader-list-text">{block.text}</div>
+      </div>
+    );
+  }
+  if (block.kind === "table") {
+    const rows = block.tableRows?.length
+      ? block.tableRows
+      : block.text
+          .split("\n")
+          .map((r) => r.split(" | ").map((c) => c.trim()))
+          .filter((r) => r.some(Boolean));
+    return (
+      <div className="reader-table-wrap">
+        <table className="reader-table">
+          {rows.length > 0 ? (
+            <thead>
+              <tr>
+                {rows[0].map((c, idx) => (
+                  <th key={idx}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+          ) : null}
+          {rows.length > 1 ? (
+            <tbody>
+              {rows.slice(1).map((row, rIdx) => (
+                <tr key={rIdx}>
+                  {row.map((c, cIdx) => (
+                    <td key={cIdx}>{c}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          ) : null}
+        </table>
+      </div>
+    );
+  }
+  if (block.kind === "image" && block.imageUrl) {
+    return (
+      <figure className="reader-figure">
+        <figcaption>{block.alt || block.text}</figcaption>
+      </figure>
+    );
+  }
+  return <p className="reader-paragraph">{block.text}</p>;
+}
+
 export default function InkStage({
   page,
+  theme,
   showInk,
-  isTranslatedView = false,
+  translationMode = "original",
+  translatedBlocks,
   readingFont,
   explainOrigin,
   selectionBusy,
+  interactiveBusy = false,
+  upgradingBlockId = null,
+  focusRequest,
   onAiSelection,
   onManualSelection,
+  onUpdateAnnotation,
   onDeleteAnnotation,
+  onCreateInteractiveBlock,
+  onUpdateInteractiveState,
+  onUpgradeInteractiveBlock,
+  onDeleteInteractiveBlock,
 }: {
   page: SavedPage;
+  theme: "dark" | "light";
   showInk: boolean;
-  isTranslatedView?: boolean;
+  translationMode?: "original" | "bilingual" | "translated";
+  translatedBlocks?: ReaderBlock[];
   readingFont: "sans" | "serif";
   explainOrigin?: string;
   selectionBusy: boolean;
+  interactiveBusy?: boolean;
+  upgradingBlockId?: string | null;
+  focusRequest?: { kind: "block" | "ann"; id: string; nonce: number } | null;
   onAiSelection: (opts: {
     blockId: string;
     quote: string;
@@ -477,7 +658,17 @@ export default function InkStage({
     anchorY?: number;
     sketch?: AnnotationSketch;
   }) => Promise<void>;
+  onUpdateAnnotation: (annotationId: string, patch: { note: string; label?: string }) => Promise<void>;
   onDeleteAnnotation: (annotationId: string) => void;
+  onCreateInteractiveBlock: (opts: {
+    afterBlockId: string | null;
+    quote?: string;
+    kind: InteractiveBlockKind;
+    prompt?: string;
+  }) => Promise<void>;
+  onUpdateInteractiveState: (blockId: string, state: Record<string, unknown>) => Promise<void>;
+  onUpgradeInteractiveBlock: (blockId: string) => Promise<void>;
+  onDeleteInteractiveBlock: (blockId: string) => Promise<void>;
 }) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const paperRef = useRef<HTMLElement | null>(null);
@@ -499,11 +690,28 @@ export default function InkStage({
   const [penStyle, setPenStyle] = useState<InkStyle>("highlight");
   const [penColor, setPenColor] = useState<InkColor>("sky");
   const [manualOpen, setManualOpen] = useState(false);
+  const [selectionInteractiveOpen, setSelectionInteractiveOpen] = useState(false);
+  const [selectionInteractivePrompt, setSelectionInteractivePrompt] = useState("");
+  const [blockPickerId, setBlockPickerId] = useState<string | null>(null);
   const [manualLabel, setManualLabel] = useState("");
   const [manualNote, setManualNote] = useState("");
   const [manualSketchKind, setManualSketchKind] = useState<SketchKind | "none">("none");
   const [manualSketchNodes, setManualSketchNodes] = useState("");
   const [manualSketchShape, setManualSketchShape] = useState<SketchCurveShape>("rise");
+
+  const isTranslatedView = translationMode === "translated";
+  const isBilingualView = translationMode === "bilingual" && Boolean(translatedBlocks?.length);
+
+  const interactiveByAfterBlock = useMemo(() => {
+    const map = new Map<string, InteractiveBlock[]>();
+    for (const ib of page.interactiveBlocks ?? []) {
+      const key = ib.afterBlockId && page.blocks.some((b) => b.id === ib.afterBlockId) ? ib.afterBlockId : "__top__";
+      const list = map.get(key) ?? [];
+      list.push(ib);
+      map.set(key, list);
+    }
+    return map;
+  }, [page.interactiveBlocks, page.blocks]);
 
   const resetManualDraft = useCallback((open = false) => {
     setManualOpen(open);
@@ -689,7 +897,22 @@ export default function InkStage({
     // Run one settled animation frame after under-block flow & font metrics lay out.
     const raf = requestAnimationFrame(() => recomputeGeometry());
     return () => cancelAnimationFrame(raf);
-  }, [recomputeGeometry, page.id, showInk, readingFont]);
+  }, [recomputeGeometry, page.id, showInk, readingFont, translationMode, page.interactiveBlocks?.length]);
+
+  useEffect(() => {
+    if (!focusRequest) return;
+    if (focusRequest.kind === "block") {
+      const el = blockRefs.current.get(focusRequest.id);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      setActiveId(focusRequest.id);
+      const ann = page.annotations.find((a) => a.id === focusRequest.id);
+      const targetEl =
+        noteRefs.current.get(focusRequest.id) ??
+        (ann ? blockRefs.current.get(ann.blockId) : undefined);
+      targetEl?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusRequest, page.annotations]);
 
   useEffect(() => {
     const stageEl = stageRef.current;
@@ -867,7 +1090,7 @@ export default function InkStage({
     if (isTranslatedView) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-      if (!manualOpen) setSelection(null);
+      if (!manualOpen && !selectionInteractiveOpen) setSelection(null);
       return;
     }
     const quote = sel.toString().trim();
@@ -883,15 +1106,17 @@ export default function InkStage({
     const stageRect = stageRef.current.getBoundingClientRect();
     const selRect = range.getBoundingClientRect();
     resetManualDraft(false);
+    setSelectionInteractiveOpen(false);
+    setSelectionInteractivePrompt("");
     setSelection({
       blockId: node.dataset.blockText,
       quote,
       top: Math.max(8, selRect.top - stageRect.top - 50),
-      left: clamp(selRect.left - stageRect.left, 8, Math.max(8, stageRect.width - 330)),
+      left: clamp(selRect.left - stageRect.left, 8, Math.max(8, stageRect.width - 360)),
     });
   };
 
-  const renderBlockElement = (block: ReaderBlock) => {
+  const renderBlockElement = (block: ReaderBlock, idx: number) => {
     const blockAnns = annotationsByBlock.get(block.id) ?? [];
     const setRef = (el: HTMLElement | null) => {
       if (el) blockRefs.current.set(block.id, el);
@@ -1016,13 +1241,79 @@ export default function InkStage({
       );
     }
 
+    const trBlock = isBilingualView
+      ? translatedBlocks?.find((b) => b.id === block.id) ?? translatedBlocks?.[idx]
+      : undefined;
+
+    const renderedContent = isBilingualView ? (
+      <div className="bilingual-block-pair">
+        <div className="bilingual-orig-col">{element}</div>
+        <div className="bilingual-tr-col" aria-label="繁體中文譯文">
+          {trBlock ? renderPlainTranslatedBlock(trBlock) : <p className="reader-paragraph is-muted">—</p>}
+        </div>
+      </div>
+    ) : (
+      element
+    );
+
     const underNotes = isDesktopRail && showInk
       ? blockAnns.filter((ann) => placementMap.get(ann.id)?.mode === "under-block")
       : [];
+    const attachedInteractive = interactiveByAfterBlock.get(block.id) ?? [];
+    const pickerOpen = blockPickerId === block.id;
 
     return (
-      <div key={block.id} className="reader-block-row">
-        {element}
+      <div key={block.id} className="reader-block-row" data-block-row={block.id}>
+        {renderedContent}
+        {block.kind !== "image" ? (
+          <div className={`block-interactive-strip ${pickerOpen ? "is-open" : ""}`}>
+            <button
+              type="button"
+              className="block-interactive-trigger"
+              disabled={interactiveBusy}
+              onClick={() => setBlockPickerId((cur) => (cur === block.id ? null : block.id))}
+            >
+              <Plus size={11} aria-hidden="true" />
+              <span>互動區塊</span>
+            </button>
+            {pickerOpen ? (
+              <div className="block-interactive-choices" role="group" aria-label="選擇互動類型">
+                <button
+                  type="button"
+                  className="block-choice-btn"
+                  disabled={interactiveBusy}
+                  onClick={async () => {
+                    setBlockPickerId(null);
+                    await onCreateInteractiveBlock({
+                      afterBlockId: block.id,
+                      quote: block.text.slice(0, 140),
+                      kind: "simulation",
+                    });
+                  }}
+                >
+                  <Cpu size={11} aria-hidden="true" />
+                  <span>互動模擬</span>
+                </button>
+                <button
+                  type="button"
+                  className="block-choice-btn"
+                  disabled={interactiveBusy}
+                  onClick={async () => {
+                    setBlockPickerId(null);
+                    await onCreateInteractiveBlock({
+                      afterBlockId: block.id,
+                      quote: block.text.slice(0, 140),
+                      kind: "stepper",
+                    });
+                  }}
+                >
+                  <ListChecks size={11} aria-hidden="true" />
+                  <span>概念步進</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {underNotes.length > 0 ? (
           <div className="near-notes-row">
             {underNotes.map((ann) => {
@@ -1041,6 +1332,7 @@ export default function InkStage({
                     pageId={page.id}
                     pageTitle={page.title}
                     onActivate={() => setActiveId(ann.id)}
+                    onUpdate={onUpdateAnnotation}
                     onDelete={onDeleteAnnotation}
                     noteRef={(el) => {
                       if (el) noteRefs.current.set(ann.id, el);
@@ -1064,7 +1356,25 @@ export default function InkStage({
                 pageId={page.id}
                 pageTitle={page.title}
                 onActivate={() => setActiveId(ann.id)}
+                onUpdate={onUpdateAnnotation}
                 onDelete={onDeleteAnnotation}
+              />
+            ))}
+          </div>
+        ) : null}
+        {attachedInteractive.length > 0 ? (
+          <div className="block-interactive-stack">
+            {attachedInteractive.map((ib) => (
+              <InteractiveBlockCard
+                key={ib.id}
+                block={ib}
+                pageId={page.id}
+                theme={theme}
+                upgrading={upgradingBlockId === ib.id}
+                onUpdateState={onUpdateInteractiveState}
+                onUpgrade={onUpgradeInteractiveBlock}
+                onDelete={onDeleteInteractiveBlock}
+                onGeometryChange={recomputeGeometry}
               />
             ))}
           </div>
@@ -1344,10 +1654,25 @@ export default function InkStage({
                 <button
                   type="button"
                   className="pen-action-btn"
-                  onClick={() => setManualOpen((v) => !v)}
+                  onClick={() => {
+                    setSelectionInteractiveOpen(false);
+                    setManualOpen((v) => !v);
+                  }}
                 >
                   <PenLine size={13} aria-hidden="true" />
                   <span>手寫批註</span>
+                </button>
+                <button
+                  type="button"
+                  className="pen-action-btn is-interactive"
+                  disabled={interactiveBusy}
+                  onClick={() => {
+                    setManualOpen(false);
+                    setSelectionInteractiveOpen((v) => !v);
+                  }}
+                >
+                  <Plus size={13} aria-hidden="true" />
+                  <span>互動區塊</span>
                 </button>
               </>
             ) : (
@@ -1364,6 +1689,65 @@ export default function InkStage({
               </button>
             )}
           </div>
+          {selectionInteractiveOpen && !selection.isImage ? (
+            <div className="pen-interactive-chooser">
+              <input
+                type="text"
+                className="pen-interactive-input"
+                value={selectionInteractivePrompt}
+                onChange={(e) => setSelectionInteractivePrompt(e.target.value)}
+                placeholder="選填重點（例：比較延遲或步驟）…"
+                aria-label="互動區塊聚焦提示"
+                maxLength={120}
+              />
+              <div className="pen-interactive-btns">
+                <button
+                  type="button"
+                  className="pen-action-btn is-primary"
+                  disabled={interactiveBusy}
+                  onClick={async () => {
+                    const target = selection;
+                    const prompt = selectionInteractivePrompt.trim();
+                    setSelection(null);
+                    setSelectionInteractiveOpen(false);
+                    setSelectionInteractivePrompt("");
+                    window.getSelection()?.removeAllRanges();
+                    await onCreateInteractiveBlock({
+                      afterBlockId: target.blockId,
+                      quote: target.quote,
+                      kind: "simulation",
+                      ...(prompt ? { prompt } : {}),
+                    });
+                  }}
+                >
+                  <Cpu size={12} aria-hidden="true" />
+                  <span>{interactiveBusy ? "建立中…" : "互動模擬"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="pen-action-btn"
+                  disabled={interactiveBusy}
+                  onClick={async () => {
+                    const target = selection;
+                    const prompt = selectionInteractivePrompt.trim();
+                    setSelection(null);
+                    setSelectionInteractiveOpen(false);
+                    setSelectionInteractivePrompt("");
+                    window.getSelection()?.removeAllRanges();
+                    await onCreateInteractiveBlock({
+                      afterBlockId: target.blockId,
+                      quote: target.quote,
+                      kind: "stepper",
+                      ...(prompt ? { prompt } : {}),
+                    });
+                  }}
+                >
+                  <ListChecks size={12} aria-hidden="true" />
+                  <span>概念步進</span>
+                </button>
+              </div>
+            </div>
+          ) : null}
           {manualOpen ? (
             <form
               className="pen-manual-form"
@@ -1495,6 +1879,7 @@ export default function InkStage({
               pageId={page.id}
               pageTitle={page.title}
               onActivate={() => setActiveId(m.annotation.id)}
+              onUpdate={onUpdateAnnotation}
               onDelete={onDeleteAnnotation}
               stylePos={{ top: placementMap.get(m.annotation.id)?.top ?? m.bounds.top }}
               noteRef={(el) => {
@@ -1515,7 +1900,20 @@ export default function InkStage({
             </p>
           </div>
         ) : null}
-        {page.blocks.map((block) => renderBlockElement(block))}
+        {(interactiveByAfterBlock.get("__top__") ?? []).map((ib) => (
+          <InteractiveBlockCard
+            key={ib.id}
+            block={ib}
+            pageId={page.id}
+            theme={theme}
+            upgrading={upgradingBlockId === ib.id}
+            onUpdateState={onUpdateInteractiveState}
+            onUpgrade={onUpgradeInteractiveBlock}
+            onDelete={onDeleteInteractiveBlock}
+            onGeometryChange={recomputeGeometry}
+          />
+        ))}
+        {page.blocks.map((block, idx) => renderBlockElement(block, idx))}
       </article>
 
       {isDesktopRail ? (
@@ -1525,7 +1923,7 @@ export default function InkStage({
         >
           {showInk && measured.length === 0 ? (
             <p className="margin-lane-hint">
-              點擊上方「AI 塗鴉標註」畫重點，或反白任意詞句寫下筆記。
+              點擊上方「AI 塗鴉標註」畫重點，或反白任意詞句寫下筆記／互動區塊。
             </p>
           ) : null}
           {rightMarginNotes.map((m) => (
@@ -1538,6 +1936,7 @@ export default function InkStage({
               pageId={page.id}
               pageTitle={page.title}
               onActivate={() => setActiveId(m.annotation.id)}
+              onUpdate={onUpdateAnnotation}
               onDelete={onDeleteAnnotation}
               stylePos={{ top: placementMap.get(m.annotation.id)?.top ?? m.bounds.top }}
               noteRef={(el) => {
@@ -1563,6 +1962,7 @@ export default function InkStage({
                 pageId={page.id}
                 pageTitle={page.title}
                 onActivate={() => setActiveId(m.annotation.id)}
+                onUpdate={onUpdateAnnotation}
                 onDelete={onDeleteAnnotation}
                 stylePos={
                   meta

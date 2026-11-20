@@ -11,6 +11,9 @@ import {
   type Folder,
   type InkColor,
   type InkStyle,
+  type InteractiveBlock,
+  type InteractiveBlockKind,
+  type InteractivePayload,
   type PageAnnotation,
   type ProviderSettings,
   type ReaderBlock,
@@ -18,6 +21,7 @@ import {
   type SavedPageSummary,
 } from "../shared/types.js";
 import { AppError } from "./errors.js";
+import { resolveQuoteAnchor } from "./extractor.js";
 
 const DEFAULT_SETTINGS: ProviderSettings = {
   provider: "codex",
@@ -28,7 +32,7 @@ const DEFAULT_SETTINGS: ProviderSettings = {
 
 interface PageRow {
   id: string;
-  source_kind: "url" | "paste";
+  source_kind: "url" | "paste" | "pdf";
   url: string | null;
   site_name: string | null;
   title: string;
@@ -40,11 +44,28 @@ interface PageRow {
   tags_json: string;
   summary: string | null;
   folder_id: string | null;
+  has_pdf: number | null;
+  pdf_page_count: number | null;
   annotated_at: string | null;
   translated_at: string | null;
   created_at: string;
   updated_at: string;
   annotation_count?: number;
+}
+
+interface InteractiveBlockRow {
+  id: string;
+  page_id: string;
+  after_block_id: string | null;
+  quote: string | null;
+  kind: InteractiveBlockKind;
+  title: string;
+  summary: string;
+  payload_json: string;
+  state_json: string | null;
+  source: "ai" | "deterministic";
+  created_at: string;
+  updated_at: string;
 }
 
 interface AnnotationRow {
@@ -125,6 +146,23 @@ export class ReaderStore {
 
       CREATE INDEX IF NOT EXISTS idx_annotations_page ON annotations(page_id);
 
+      CREATE TABLE IF NOT EXISTS interactive_blocks (
+        id TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+        after_block_id TEXT,
+        quote TEXT,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        state_json TEXT,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_interactive_blocks_page ON interactive_blocks(page_id);
+
       CREATE TABLE IF NOT EXISTS settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         json TEXT NOT NULL
@@ -145,6 +183,8 @@ export class ReaderStore {
       this.db.exec("ALTER TABLE pages ADD COLUMN translated_blocks_json TEXT");
     }
     if (!pageColNames.has("translated_at")) this.db.exec("ALTER TABLE pages ADD COLUMN translated_at TEXT");
+    if (!pageColNames.has("has_pdf")) this.db.exec("ALTER TABLE pages ADD COLUMN has_pdf INTEGER NOT NULL DEFAULT 0");
+    if (!pageColNames.has("pdf_page_count")) this.db.exec("ALTER TABLE pages ADD COLUMN pdf_page_count INTEGER");
   }
 
   close(): void {
@@ -268,9 +308,45 @@ export class ReaderStore {
       tags,
       ...(row.summary ? { summary: row.summary } : {}),
       folderId: row.folder_id,
+      ...(row.has_pdf ? { hasPdf: true } : {}),
+      ...(row.pdf_page_count != null ? { pdfPageCount: row.pdf_page_count } : {}),
       annotationCount,
       ...(row.annotated_at ? { annotatedAt: row.annotated_at } : {}),
       ...(row.translated_at ? { translatedAt: row.translated_at } : {}),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private mapInteractiveBlock(row: InteractiveBlockRow): InteractiveBlock {
+    let payload: InteractivePayload = {};
+    try {
+      payload = JSON.parse(row.payload_json) as InteractivePayload;
+    } catch {
+      payload = {};
+    }
+    let state: Record<string, unknown> | undefined;
+    if (row.state_json) {
+      try {
+        const parsed = JSON.parse(row.state_json);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          state = parsed as Record<string, unknown>;
+        }
+      } catch {
+        state = undefined;
+      }
+    }
+    return {
+      id: row.id,
+      pageId: row.page_id,
+      afterBlockId: row.after_block_id,
+      ...(row.quote ? { quote: row.quote } : {}),
+      kind: row.kind,
+      title: row.title,
+      summary: row.summary,
+      payload,
+      ...(state ? { state } : {}),
+      source: row.source,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -339,6 +415,10 @@ export class ReaderStore {
       .prepare("SELECT * FROM annotations WHERE page_id = ? ORDER BY created_at ASC")
       .all(id) as unknown as AnnotationRow[];
     const annotations = annRows.map((a) => this.mapAnnotation(a));
+    const interactiveRows = this.db
+      .prepare("SELECT * FROM interactive_blocks WHERE page_id = ? ORDER BY created_at ASC")
+      .all(id) as unknown as InteractiveBlockRow[];
+    const interactiveBlocks = interactiveRows.map((r) => this.mapInteractiveBlock(r));
     let blocks: ReaderBlock[] = [];
     try {
       blocks = JSON.parse(row.blocks_json!) as ReaderBlock[];
@@ -359,11 +439,12 @@ export class ReaderStore {
       ...(row.translated_title ? { translatedTitle: row.translated_title } : {}),
       ...(translatedBlocks ? { translatedBlocks } : {}),
       annotations,
+      interactiveBlocks,
     };
   }
 
   createPage(input: {
-    sourceKind: "url" | "paste";
+    sourceKind: "url" | "paste" | "pdf";
     url?: string;
     siteName?: string;
     title: string;
@@ -371,6 +452,8 @@ export class ReaderStore {
     blocks: ReaderBlock[];
     folderId?: string | null;
     topic?: string;
+    hasPdf?: boolean;
+    pdfPageCount?: number;
   }): SavedPage {
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -381,8 +464,8 @@ export class ReaderStore {
     this.db
       .prepare(`
         INSERT INTO pages (
-          id, source_kind, url, site_name, title, excerpt, blocks_json, topic, tags_json, folder_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)
+          id, source_kind, url, site_name, title, excerpt, blocks_json, topic, tags_json, folder_id, has_pdf, pdf_page_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)
       `)
       .run(
         id,
@@ -394,9 +477,76 @@ export class ReaderStore {
         JSON.stringify(input.blocks),
         (input.topic || "未分類").slice(0, 40),
         folderId,
+        input.hasPdf ? 1 : 0,
+        input.pdfPageCount ?? null,
         now,
         now,
       );
+    return this.getPage(id)!;
+  }
+
+  updatePageSnapshot(
+    id: string,
+    snapshot: {
+      sourceKind?: "url" | "paste" | "pdf";
+      url?: string;
+      siteName?: string;
+      title: string;
+      excerpt: string;
+      blocks: ReaderBlock[];
+      hasPdf?: boolean;
+      pdfPageCount?: number;
+    },
+  ): SavedPage {
+    const current = this.getPage(id);
+    if (!current) throw new AppError(404, "找不到此頁面。");
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(`
+          UPDATE pages
+          SET source_kind = ?, url = ?, site_name = ?, title = ?, excerpt = ?, blocks_json = ?,
+              has_pdf = ?, pdf_page_count = ?, translated_title = NULL, translated_blocks_json = NULL,
+              translated_at = NULL, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(
+          snapshot.sourceKind ?? current.sourceKind,
+          snapshot.url ?? current.url ?? null,
+          snapshot.siteName ?? current.siteName ?? null,
+          snapshot.title.slice(0, 120),
+          snapshot.excerpt.slice(0, 200),
+          JSON.stringify(snapshot.blocks),
+          snapshot.hasPdf ? 1 : 0,
+          snapshot.pdfPageCount ?? null,
+          now,
+          id,
+        );
+
+      const updateAnnStmt = this.db.prepare(
+        "UPDATE annotations SET block_id = ?, start_offset = ?, end_offset = ?, quote = ? WHERE id = ?",
+      );
+      for (const ann of current.annotations) {
+        const sameBlock = snapshot.blocks.find((b) => b.id === ann.blockId);
+        const sameResolved = sameBlock ? resolveQuoteAnchor(sameBlock.text, ann.quote) : undefined;
+        if (sameResolved && sameBlock) {
+          updateAnnStmt.run(sameBlock.id, sameResolved.startOffset, sameResolved.endOffset, sameResolved.exactQuote, ann.id);
+          continue;
+        }
+        for (const blk of snapshot.blocks) {
+          const found = resolveQuoteAnchor(blk.text, ann.quote);
+          if (found) {
+            updateAnnStmt.run(blk.id, found.startOffset, found.endOffset, found.exactQuote, ann.id);
+            break;
+          }
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
     return this.getPage(id)!;
   }
 
@@ -591,5 +741,134 @@ export class ReaderStore {
       .prepare("DELETE FROM annotations WHERE id = ? AND page_id = ?")
       .run(annotationId, pageId);
     if (!res.changes) throw new AppError(404, "找不到此筆標註。");
+  }
+
+  updateAnnotation(
+    pageId: string,
+    annotationId: string,
+    patch: {
+      note?: string;
+      label?: string | null;
+      topic?: string | null;
+      style?: InkStyle;
+      color?: InkColor;
+    },
+  ): PageAnnotation {
+    const row = this.db
+      .prepare("SELECT * FROM annotations WHERE id = ? AND page_id = ?")
+      .get(annotationId, pageId) as AnnotationRow | undefined;
+    if (!row) throw new AppError(404, "找不到此筆標註。");
+
+    const nextNote = patch.note !== undefined ? patch.note.trim().slice(0, 320) : row.note;
+    if (!nextNote) throw new AppError(400, "筆記內容不可為空。");
+    const nextLabel = patch.label === undefined ? row.label : patch.label ? patch.label.trim().slice(0, 16) : null;
+    const nextTopic = patch.topic === undefined ? row.topic : patch.topic ? patch.topic.trim().slice(0, 40) : null;
+    const nextStyle = patch.style ?? row.style;
+    const nextColor = patch.color ?? row.color;
+    const now = new Date().toISOString();
+
+    this.db
+      .prepare(`
+        UPDATE annotations
+        SET note = ?, label = ?, topic = ?, style = ?, color = ?
+        WHERE id = ? AND page_id = ?
+      `)
+      .run(nextNote, nextLabel, nextTopic, nextStyle, nextColor, annotationId, pageId);
+    this.db.prepare("UPDATE pages SET updated_at = ? WHERE id = ?").run(now, pageId);
+
+    const updated = this.db
+      .prepare("SELECT * FROM annotations WHERE id = ? AND page_id = ?")
+      .get(annotationId, pageId) as unknown as AnnotationRow;
+    return this.mapAnnotation(updated);
+  }
+
+  getInteractiveBlock(pageId: string, blockId: string): InteractiveBlock | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM interactive_blocks WHERE id = ? AND page_id = ?")
+      .get(blockId, pageId) as InteractiveBlockRow | undefined;
+    return row ? this.mapInteractiveBlock(row) : undefined;
+  }
+
+  addInteractiveBlock(
+    pageId: string,
+    input: {
+      afterBlockId: string | null;
+      quote?: string;
+      kind: InteractiveBlockKind;
+      title: string;
+      summary: string;
+      payload: InteractivePayload;
+      state?: Record<string, unknown>;
+      source: "ai" | "deterministic";
+    },
+  ): InteractiveBlock {
+    const current = this.getPage(pageId);
+    if (!current) throw new AppError(404, "找不到此頁面。");
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`
+        INSERT INTO interactive_blocks (
+          id, page_id, after_block_id, quote, kind, title, summary, payload_json, state_json, source, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        id,
+        pageId,
+        input.afterBlockId,
+        input.quote ? input.quote.slice(0, 300) : null,
+        input.kind,
+        input.title.trim().slice(0, 120) || "互動理解區塊",
+        input.summary.trim().slice(0, 280),
+        JSON.stringify(input.payload),
+        input.state ? JSON.stringify(input.state) : null,
+        input.source,
+        now,
+        now,
+      );
+    this.db.prepare("UPDATE pages SET updated_at = ? WHERE id = ?").run(now, pageId);
+    return this.getInteractiveBlock(pageId, id)!;
+  }
+
+  updateInteractiveBlock(
+    pageId: string,
+    blockId: string,
+    patch: {
+      title?: string;
+      summary?: string;
+      payload?: InteractivePayload;
+      state?: Record<string, unknown>;
+      source?: "ai" | "deterministic";
+    },
+  ): InteractiveBlock {
+    const current = this.getInteractiveBlock(pageId, blockId);
+    if (!current) throw new AppError(404, "找不到此互動區塊。");
+    const now = new Date().toISOString();
+    const nextState = patch.state ? { ...(current.state ?? {}), ...patch.state } : current.state;
+    this.db
+      .prepare(`
+        UPDATE interactive_blocks
+        SET title = ?, summary = ?, payload_json = ?, state_json = ?, source = ?, updated_at = ?
+        WHERE id = ? AND page_id = ?
+      `)
+      .run(
+        patch.title !== undefined ? patch.title.trim().slice(0, 120) || current.title : current.title,
+        patch.summary !== undefined ? patch.summary.trim().slice(0, 280) : current.summary,
+        JSON.stringify(patch.payload ?? current.payload),
+        nextState ? JSON.stringify(nextState) : null,
+        patch.source ?? current.source,
+        now,
+        blockId,
+        pageId,
+      );
+    this.db.prepare("UPDATE pages SET updated_at = ? WHERE id = ?").run(now, pageId);
+    return this.getInteractiveBlock(pageId, blockId)!;
+  }
+
+  deleteInteractiveBlock(pageId: string, blockId: string): void {
+    const res = this.db
+      .prepare("DELETE FROM interactive_blocks WHERE id = ? AND page_id = ?")
+      .run(blockId, pageId);
+    if (!res.changes) throw new AppError(404, "找不到此互動區塊。");
   }
 }

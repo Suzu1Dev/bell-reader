@@ -1,0 +1,422 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AddressInfo } from "node:net";
+import { createApp } from "./app.js";
+import { AppError } from "./errors.js";
+import { extractBlocksFromPdf } from "./extractor.js";
+import {
+  buildDeterministicSimulation,
+  buildDeterministicStepper,
+  sanitizeSimulationHtml,
+} from "./interactive.js";
+import { ReaderStore } from "./store.js";
+import { SUITE_LIMITS } from "../shared/suite.js";
+
+function listenLocal(app: ReturnType<typeof createApp>): Promise<{ url: string; close: () => Promise<void> }> {
+  return new Promise((resolve) => {
+    const server = app.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>((done) => server.close(() => done())),
+      });
+    });
+  });
+}
+
+function makeMinimalPdf(streamBody: string): Buffer {
+  const objects = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+    `4 0 obj\n<< /Length ${Buffer.byteLength(streamBody, "latin1")} >>\nstream\n${streamBody}\nendstream\nendobj\n`,
+    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [0];
+  for (const obj of objects) {
+    offsets.push(Buffer.byteLength(pdf, "latin1"));
+    pdf += obj;
+  }
+  const xrefOffset = Buffer.byteLength(pdf, "latin1");
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i <= objects.length; i++) {
+    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(pdf, "latin1");
+}
+
+test("PDF extraction supports Ghostscript, pure-JS fallback, and scanned empty PDFs", async () => {
+  const pdfWithText = makeMinimalPdf("BT /F1 14 Tf 72 720 Td (Frame budget is 16.6ms in browser) Tj ET");
+  const gsExtracted = await extractBlocksFromPdf(pdfWithText, "render-pipeline.pdf");
+  assert.equal(gsExtracted.title, "render-pipeline");
+  assert.equal(gsExtracted.pageCount, 1);
+  assert.ok(gsExtracted.blocks.some((b) => b.text.includes("16.6ms")));
+
+  // Force pure-JS fallback by pointing GS_BIN to a nonexistent path
+  const prevGs = process.env.GS_BIN;
+  process.env.GS_BIN = "/nonexistent/gs-binary";
+  try {
+    const jsExtracted = await extractBlocksFromPdf(pdfWithText, "fallback.pdf");
+    assert.ok(jsExtracted.blocks.some((b) => b.text.includes("16.6ms")));
+
+    const scannedPdf = makeMinimalPdf("");
+    const scannedExtracted = await extractBlocksFromPdf(scannedPdf, "scanned-doc.pdf");
+    assert.equal(scannedExtracted.blocks.length, 1);
+    assert.ok(scannedExtracted.blocks[0].text.includes("左側 PDF 原檔"));
+  } finally {
+    if (prevGs === undefined) delete process.env.GS_BIN;
+    else process.env.GS_BIN = prevGs;
+  }
+});
+
+test("Deterministic interactive blocks are passage-driven and sanitizer blocks unsafe HTML/APIs", () => {
+  const numSim = buildDeterministicSimulation({
+    block: {
+      id: "b1",
+      kind: "paragraph",
+      text: "The rendering pipeline targets 16.6ms per frame at 60Hz with 25ms max task latency.",
+    },
+    pageTitle: "Frame Budget",
+  });
+  assert.ok(numSim.html.includes("16.6"));
+  assert.ok(numSim.html.includes("60"));
+
+  const codeSim = buildDeterministicSimulation({
+    block: {
+      id: "b2",
+      kind: "code",
+      language: "ts",
+      text: "const chunk = items.splice(0, 42);\nrequestAnimationFrame(() => flush(chunk));",
+    },
+    pageTitle: "Batch Flush",
+  });
+  assert.ok(codeSim.html.includes("items.splice(0, 42)"));
+  assert.notEqual(numSim.html, codeSim.html);
+
+  const tableSim = buildDeterministicSimulation({
+    block: {
+      id: "b3",
+      kind: "table",
+      text: "Tier | Latency\nL1Cache | 1ns\nDRAM | 80ns",
+      tableRows: [
+        ["Tier", "Latency"],
+        ["L1Cache", "1ns"],
+        ["DRAM", "80ns"],
+      ],
+    },
+    pageTitle: "Memory Hierarchy",
+  });
+  assert.ok(tableSim.html.includes("L1Cache"));
+  assert.ok(tableSim.html.includes("DRAM"));
+
+  const stepper = buildDeterministicStepper({
+    block: {
+      id: "b4",
+      kind: "paragraph",
+      text: "Microtask queue drains completely before paint. Long tasks exceeding 50ms cause dropped frames.",
+    },
+    pageTitle: "Event Loop",
+  });
+  assert.ok(stepper.steps.length >= 2);
+  assert.ok(stepper.checks.length >= 1);
+  for (const chk of stepper.checks) {
+    assert.ok(chk.correctIndex >= 0 && chk.correctIndex < chk.options.length);
+  }
+
+  for (const unsafe of [
+    '<iframe src="/x"></iframe>',
+    "<object data='x'></object>",
+    "<form action='/steal'><input /></form>",
+    '<img src="https://evil.test/track.png" />',
+    "<script>fetch('/api/pages')</script>",
+    "<script>new XMLHttpRequest()</script>",
+    "<script>localStorage.getItem('x')</script>",
+    "<script>window.parent.postMessage('x', '*')</script>",
+  ]) {
+    assert.throws(() => sanitizeSimulationHtml(unsafe), `expected unsafe HTML rejected: ${unsafe}`);
+  }
+});
+
+test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PATCH, refetch, and Suite Today", async () => {
+  const tempDataDir = mkdtempSync(join(tmpdir(), "bell-reader-m2-test-"));
+  const store = new ReaderStore(":memory:");
+  let refetchVersion = 1;
+
+  const app = createApp({
+    store,
+    dataDir: tempDataDir,
+    sourceFetcher: async (url) => {
+      if (url.endsWith(".pdf")) {
+        return {
+          kind: "pdf",
+          bytes: makeMinimalPdf("BT /F1 12 Tf 72 720 Td (Remote PDF 128MB buffer) Tj ET"),
+          finalUrl: new URL(url),
+          contentType: "application/pdf",
+        };
+      }
+      const text =
+        refetchVersion === 1
+          ? "First snapshot discusses 16.6ms frame budget and Microtask Queue."
+          : "Updated snapshot v2 discusses 8.3ms 120Hz frame budget and Microtask Queue.";
+      return {
+        kind: "html",
+        html: `<article><h1>Refetchable Article</h1><p>${text}</p></article>`,
+        finalUrl: new URL(url),
+        contentType: "text/html",
+      };
+    },
+    aiRunner: async (prompt) => {
+      if (prompt.includes("互動模擬")) {
+        throw new AppError(503, "AI unconfigured in test");
+      }
+      return {
+        title: "AI 深化：微任務排程",
+        summary: "AI 整理後的步驟與自我檢核。",
+        steps: [
+          { label: "步驟 1 · 清空佇列", detail: "Microtask Queue 必須全數清空。", highlightToken: "Microtask" },
+          { label: "步驟 2 · 繪製檢查", detail: "進入 rAF 與重繪。", highlightToken: "rAF" },
+        ],
+        checks: [
+          {
+            question: "哪個佇列會在 Macrotask 後立即清空？",
+            options: ["Microtask Queue", "GPU Texture Pool"],
+            correctIndex: 0,
+            explanation: "JS 引擎在進入渲染前會先清空 Microtask Queue。",
+          },
+        ],
+      };
+    },
+  });
+
+  const srv = await listenLocal(app);
+  try {
+    // 1. Raw PDF upload + magic validation + same-origin framing headers + delete cleanup
+    const badPdfRes = await fetch(`${srv.url}/api/pages/pdf`, {
+      method: "POST",
+      headers: { "content-type": "application/pdf", "x-bell-filename": "bad.pdf" },
+      body: new Uint8Array(Buffer.from("NOT A PDF")),
+    });
+    assert.equal(badPdfRes.status, 422);
+
+    const oversizedRes = await fetch(`${srv.url}/api/pages/pdf`, {
+      method: "POST",
+      headers: { "content-type": "application/pdf", "x-bell-filename": "huge.pdf" },
+      body: new Uint8Array(15 * 1024 * 1024 + 64),
+    });
+    assert.equal(oversizedRes.status, 413);
+
+    const nonJsonFolder = await fetch(`${srv.url}/api/folders`, {
+      method: "POST",
+      headers: { "content-type": "application/pdf" },
+      body: new Uint8Array(Buffer.from("%PDF-1.4")),
+    });
+    assert.equal(nonJsonFolder.status, 415);
+
+    const samplePdf = makeMinimalPdf("BT /F1 12 Tf 72 720 Td (Uploaded PDF 42KB packet) Tj ET");
+    const uploadRes = await fetch(`${srv.url}/api/pages/pdf`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/pdf",
+        "x-bell-filename": encodeURIComponent("網路封包講義.pdf"),
+      },
+      body: new Uint8Array(samplePdf),
+    });
+    assert.equal(uploadRes.status, 201);
+    const uploadBody = (await uploadRes.json()) as { page: { id: string; sourceKind: string; hasPdf?: boolean; title: string } };
+    assert.equal(uploadBody.page.sourceKind, "pdf");
+    assert.equal(uploadBody.page.hasPdf, true);
+    assert.equal(uploadBody.page.title, "網路封包講義");
+
+    const pdfPathOnDisk = join(tempDataDir, "pdfs", `${uploadBody.page.id}.pdf`);
+    assert.ok(existsSync(pdfPathOnDisk), "expected PDF file persisted in dataDir/pdfs");
+
+    const servePdfRes = await fetch(`${srv.url}/api/pages/${uploadBody.page.id}/pdf`);
+    assert.equal(servePdfRes.status, 200);
+    assert.equal(servePdfRes.headers.get("content-type"), "application/pdf");
+    assert.equal(servePdfRes.headers.get("x-frame-options"), "SAMEORIGIN");
+    assert.ok((servePdfRes.headers.get("content-security-policy") || "").includes("frame-ancestors 'self'"));
+    const servedBytes = Buffer.from(await servePdfRes.arrayBuffer());
+    assert.deepEqual(servedBytes, samplePdf);
+
+    // Deleting page removes persisted PDF file
+    const delPdfRes = await fetch(`${srv.url}/api/pages/${uploadBody.page.id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(delPdfRes.status, 200);
+    assert.equal(existsSync(pdfPathOnDisk), false);
+
+    // 2. Public HTTPS .pdf URL ingestion + SSRF protection
+    const ssrfPdfRes = await fetch(`${srv.url}/api/pages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://127.0.0.1/secret.pdf" }),
+    });
+    assert.equal(ssrfPdfRes.status, 400);
+
+    const urlPdfRes = await fetch(`${srv.url}/api/pages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com/papers/buffer.pdf" }),
+    });
+    assert.equal(urlPdfRes.status, 201);
+    const urlPdfBody = (await urlPdfRes.json()) as { page: { id: string; hasPdf?: boolean } };
+    assert.equal(urlPdfBody.page.hasPdf, true);
+
+    // 3. URL page + annotation PATCH + interactive blocks CRUD/fallback/CSP + refetch
+    const pageRes = await fetch(`${srv.url}/api/pages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com/articles/budget" }),
+    });
+    assert.equal(pageRes.status, 201);
+    const { page } = (await pageRes.json()) as {
+      page: { id: string; blocks: Array<{ id: string; text: string }> };
+    };
+
+    const annCreate = await fetch(`${srv.url}/api/pages/${page.id}/annotations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        blockId: page.blocks[0].id,
+        quote: "Microtask Queue",
+        style: "highlight",
+        color: "amber",
+        note: "初始筆記",
+      }),
+    });
+    assert.equal(annCreate.status, 201);
+    const { annotation } = (await annCreate.json()) as { annotation: { id: string } };
+
+    const annPatch = await fetch(`${srv.url}/api/pages/${page.id}/annotations/${annotation.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ note: "更新後的筆記內容", label: "核心機制" }),
+    });
+    assert.equal(annPatch.status, 200);
+    const patchedAnn = (await annPatch.json()) as { annotation: { note: string; label?: string } };
+    assert.equal(patchedAnn.annotation.note, "更新後的筆記內容");
+    assert.equal(patchedAnn.annotation.label, "核心機制");
+
+    const missingAnnPatch = await fetch(`${srv.url}/api/pages/${page.id}/annotations/missing-id`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ note: "should fail" }),
+    });
+    assert.equal(missingAnnPatch.status, 404);
+
+    // Interactive simulation with mode=auto falls back seamlessly when AI throws 503
+    const simCreate = await fetch(`${srv.url}/api/pages/${page.id}/interactive-blocks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        afterBlockId: page.blocks[0].id,
+        quote: "16.6ms frame budget",
+        kind: "simulation",
+        mode: "auto",
+      }),
+    });
+    assert.equal(simCreate.status, 201);
+    const simBody = (await simCreate.json()) as { block: { id: string; source: string } };
+    assert.equal(simBody.block.source, "deterministic");
+
+    const frameRes = await fetch(`${srv.url}/api/pages/${page.id}/interactive-blocks/${simBody.block.id}/frame?theme=dark`);
+    assert.equal(frameRes.status, 200);
+    assert.match(frameRes.headers.get("content-type") || "", /text\/html/);
+    assert.equal(frameRes.headers.get("x-frame-options"), "SAMEORIGIN");
+    const frameCsp = frameRes.headers.get("content-security-policy") || "";
+    assert.ok(frameCsp.includes("default-src 'none'"));
+    assert.ok(frameCsp.includes("script-src 'unsafe-inline'"));
+    assert.ok(frameCsp.includes("connect-src 'none'"));
+    assert.ok(frameCsp.includes("frame-ancestors 'self'"));
+    const frameHtml = await frameRes.text();
+    assert.ok(frameHtml.includes("16.6"));
+
+    // Interactive stepper + upgrade + state persistence + delete
+    const stepCreate = await fetch(`${srv.url}/api/pages/${page.id}/interactive-blocks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        afterBlockId: page.blocks[0].id,
+        kind: "stepper",
+      }),
+    });
+    assert.equal(stepCreate.status, 201);
+    const stepBody = (await stepCreate.json()) as { block: { id: string } };
+
+    const statePatch = await fetch(`${srv.url}/api/pages/${page.id}/interactive-blocks/${stepBody.block.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state: { activeStep: 1, answers: { "0": 0 } } }),
+    });
+    assert.equal(statePatch.status, 200);
+
+    const upgradeRes = await fetch(`${srv.url}/api/pages/${page.id}/interactive-blocks/${stepBody.block.id}/upgrade`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(upgradeRes.status, 200);
+    const upgraded = (await upgradeRes.json()) as { block: { source: string; title: string } };
+    assert.equal(upgraded.block.source, "ai");
+    assert.equal(upgraded.block.title, "AI 深化：微任務排程");
+
+    // Refetch preserves id, interactiveBlocks, and re-anchors annotations
+    refetchVersion = 2;
+    const refetchRes = await fetch(`${srv.url}/api/pages/${page.id}/refetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(refetchRes.status, 200);
+    const refetched = (await refetchRes.json()) as {
+      page: {
+        id: string;
+        blocks: Array<{ text: string }>;
+        annotations: Array<{ quote: string; note: string }>;
+        interactiveBlocks: Array<{ id: string }>;
+      };
+    };
+    assert.equal(refetched.page.id, page.id);
+    assert.ok(refetched.page.blocks[0].text.includes("120Hz"));
+    assert.equal(refetched.page.annotations[0].note, "更新後的筆記內容");
+    assert.equal(refetched.page.interactiveBlocks.length, 2);
+
+    // Delete interactive block leaves page blocks & annotations untouched
+    const delIb = await fetch(`${srv.url}/api/pages/${page.id}/interactive-blocks/${simBody.block.id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(delIb.status, 200);
+    const afterDel = (await delIb.json()) as { page: { blocks: unknown[]; annotations: unknown[]; interactiveBlocks: unknown[] } };
+    assert.equal(afterDel.page.blocks.length, 1);
+    assert.equal(afterDel.page.annotations.length, 1);
+    assert.equal(afterDel.page.interactiveBlocks.length, 1);
+
+    // 4. Suite Today strict schema check
+    const todayRes = await fetch(`${srv.url}/api/suite/today`);
+    assert.equal(todayRes.status, 200);
+    const today = (await todayRes.json()) as Record<string, unknown>;
+    assert.deepEqual(
+      Object.keys(today).sort(),
+      ["appId", "counts", "generatedAt", "items", "schemaVersion", "truncated"],
+    );
+    const items = today.items as Array<Record<string, unknown>>;
+    for (const item of items) {
+      assert.deepEqual(
+        Object.keys(item).sort(),
+        ["detail", "href", "id", "sourceApp", "state", "title", "type", "updatedAt"],
+      );
+      assert.ok([...String(item.detail)].length <= SUITE_LIMITS.detail);
+    }
+  } finally {
+    await srv.close();
+    store.close();
+    rmSync(tempDataDir, { recursive: true, force: true });
+  }
+});
