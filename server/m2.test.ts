@@ -74,6 +74,12 @@ test("PDF extraction supports Ghostscript, pure-JS fallback, and scanned empty P
   }
 });
 
+function decodeSimPayload(html: string): string {
+  const m = html.match(/atob\("([A-Za-z0-9+/=]+)"\)/);
+  assert.ok(m, "expected base64-encoded payload in deterministic simulation");
+  return Buffer.from(m[1], "base64").toString("utf8");
+}
+
 test("Deterministic interactive blocks are passage-driven and sanitizer blocks unsafe HTML/APIs", () => {
   const numSim = buildDeterministicSimulation({
     block: {
@@ -83,8 +89,8 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     },
     pageTitle: "Frame Budget",
   });
-  assert.ok(numSim.html.includes("16.6"));
-  assert.ok(numSim.html.includes("60"));
+  assert.ok(decodeSimPayload(numSim.html).includes("16.6"));
+  assert.ok(decodeSimPayload(numSim.html).includes("60"));
 
   const codeSim = buildDeterministicSimulation({
     block: {
@@ -95,7 +101,7 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     },
     pageTitle: "Batch Flush",
   });
-  assert.ok(codeSim.html.includes("items.splice(0, 42)"));
+  assert.ok(decodeSimPayload(codeSim.html).includes("items.splice(0, 42)"));
   assert.notEqual(numSim.html, codeSim.html);
 
   const tableSim = buildDeterministicSimulation({
@@ -111,8 +117,8 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     },
     pageTitle: "Memory Hierarchy",
   });
-  assert.ok(tableSim.html.includes("L1Cache"));
-  assert.ok(tableSim.html.includes("DRAM"));
+  assert.ok(decodeSimPayload(tableSim.html).includes("L1Cache"));
+  assert.ok(decodeSimPayload(tableSim.html).includes("DRAM"));
 
   const stepper = buildDeterministicStepper({
     block: {
@@ -135,18 +141,39 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     '<img src="https://evil.test/track.png" />',
     "<img src=https://evil.test/track.png>",
     "<svg onload=alert(1)></svg>",
+    "<svg/onload=alert(1)></svg>",
+    '<div title="a > b" onclick=alert(1)>hi</div>',
+    '<div title="a > b"onclick=alert(1)>hi</div>',
+    '<a href="javascript:alert(1)">click</a>',
+    '<a href="&#104;ttps://evil.test">click</a>',
+    '<a href="javascript&colon;alert(1)">click</a>',
     "<script>fetch('/api/pages')</script>",
+    "<script>fetch?.('/api/pages')</script>",
     "<script>new XMLHttpRequest()</script>",
     "<script>localStorage.getItem('x')</script>",
     "<script>window.parent.postMessage('x', '*')</script>",
     "<script>window['open']('https://evil.test')</script>",
     "<script>window['fetch']('/api/pages')</script>",
     "<script>self['parent'].postMessage('x','*')</script>",
+    "<script>self?.['parent'].postMessage('x','*')</script>",
+    "<script>window?.['open']('https://evil.test')</script>",
+    "<script>window?.open('https://evil.test')</script>",
+    "<script>globalThis?.['fetch']('/api/pages')</script>",
+    "<script>document?.['cookie']</script>",
+    "<script>window\n.open('https://evil.test')</script>",
+    "<script>document\n.cookie</script>",
+    "<script>frames[0].postMessage('x','*')</script>",
+    "<script>top?.location?.assign('https://evil.test')</script>",
     "<div>hi</div></script><script>alert(1)</script>",
     "<script>var x = '</script><script>alert(1)</script>'</script>",
   ]) {
     assert.throws(() => sanitizeSimulationHtml(unsafe), `expected unsafe HTML rejected: ${unsafe}`);
   }
+
+  // Clean HTML with '>' inside quoted attribute or harmless data-* string must still pass
+  assert.doesNotThrow(() =>
+    sanitizeSimulationHtml('<div class="sim-wrap" title="a > b" data-note="onclick=1"><a href="#sec">ok</a></div>'),
+  );
 
   // Zero-value numeric simulation + stepper edge case & SVG escaping
   const zeroSim = buildDeterministicSimulation({
@@ -157,7 +184,7 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     },
     pageTitle: "Zero Value Edge",
   });
-  assert.ok(zeroSim.html.includes('"base":0,"min":0,'), "expected zero-value numeric slider min === 0");
+  assert.ok(decodeSimPayload(zeroSim.html).includes('"base":0,"min":0,'), "expected zero-value numeric slider min === 0");
   assert.doesNotThrow(() => sanitizeSimulationHtml(zeroSim.html));
 
   const zeroStepper = buildDeterministicStepper({
@@ -188,6 +215,18 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
   assert.ok(angleTableSim.html.includes("function esc("), "expected SVG escaping helper in table simulation");
   assert.ok(angleTableSim.html.includes("esc(entry.item.name.slice(0, 12))"));
   assert.doesNotThrow(() => sanitizeSimulationHtml(angleTableSim.html));
+
+  // All 4 deterministic simulation templates pass sanitizer even when passage mentions fetch/localStorage/cookie/onclick
+  const riskyWebText = "fetch('/api') localStorage document.cookie window.open() <button onclick=x> window['top']";
+  for (const b of [
+    { id: "r-tbl", kind: "table" as const, text: riskyWebText, tableRows: [["API", "Usage"], ["fetch()", riskyWebText]] },
+    { id: "r-code", kind: "code" as const, text: `const a = await fetch('/api');\ndocument.cookie = 'x=1';\n${riskyWebText}` },
+    { id: "r-num", kind: "paragraph" as const, text: `Timeout 30ms with ${riskyWebText}` },
+    { id: "r-flow", kind: "paragraph" as const, text: `fetch('/api') -> localStorage -> document.cookie -> window.open()` },
+  ]) {
+    const s = buildDeterministicSimulation({ block: b, pageTitle: "Web APIs" });
+    assert.doesNotThrow(() => sanitizeSimulationHtml(s.html), `template for ${b.id} must pass sanitizer`);
+  }
 });
 
 test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PATCH, refetch, and Suite Today", async () => {
@@ -400,7 +439,7 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
     assert.ok(frameCsp.includes("connect-src 'none'"));
     assert.ok(frameCsp.includes("frame-ancestors 'self'"));
     const frameHtml = await frameRes.text();
-    assert.ok(frameHtml.includes("16.6"));
+    assert.ok(decodeSimPayload(frameHtml).includes("16.6"));
 
     // Interactive stepper + upgrade + state persistence + delete
     const stepCreate = await fetch(`${srv.url}/api/pages/${page.id}/interactive-blocks`, {
@@ -462,6 +501,34 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
     assert.equal(afterDel.page.blocks.length, 1);
     assert.equal(afterDel.page.annotations.length, 1);
     assert.equal(afterDel.page.interactiveBlocks.length, 1);
+
+    // JS/web passage mentioning fetch/localStorage/cookie/window.open/onclick works in deterministic simulation
+    const jsPageRes = await fetch(`${srv.url}/api/pages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Web API Security Notes",
+        content: "const res = await fetch('/api/items'); localStorage.setItem('k', 'v'); document.cookie; window.open(); <button onclick=x>",
+      }),
+    });
+    assert.equal(jsPageRes.status, 201);
+    const { page: jsPage } = (await jsPageRes.json()) as { page: { id: string; blocks: Array<{ id: string }> } };
+    const jsSimCreate = await fetch(`${srv.url}/api/pages/${jsPage.id}/interactive-blocks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        afterBlockId: jsPage.blocks[0].id,
+        quote: "const res = await fetch('/api/items'); localStorage.setItem('k', 'v'); document.cookie; window.open(); <button onclick=x>",
+        kind: "simulation",
+        mode: "instant",
+      }),
+    });
+    assert.equal(jsSimCreate.status, 201);
+    const jsSimBody = (await jsSimCreate.json()) as { block: { id: string } };
+    const jsFrameRes = await fetch(`${srv.url}/api/pages/${jsPage.id}/interactive-blocks/${jsSimBody.block.id}/frame`);
+    assert.equal(jsFrameRes.status, 200);
+    const jsFrameHtml = await jsFrameRes.text();
+    assert.ok(decodeSimPayload(jsFrameHtml).includes("fetch('/api/items')"));
 
     // 4. Suite Today strict schema check
     const todayRes = await fetch(`${srv.url}/api/suite/today`);

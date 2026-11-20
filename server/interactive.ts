@@ -38,26 +38,29 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function safeJsonForScript(data: unknown): string {
-  return JSON.stringify(data)
-    .replace(/</g, "\\u003c")
-    .replace(/>/g, "\\u003e")
-    .replace(/&/g, "\\u0026");
+function encodePayloadForScript(data: unknown): string {
+  const b64 = Buffer.from(JSON.stringify(data), "utf8").toString("base64");
+  return `JSON.parse(new TextDecoder().decode(Uint8Array.from(atob("${b64}"), function(c){ return c.charCodeAt(0); })))`;
 }
 
 const FORBIDDEN_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   { re: /<(?:iframe|object|embed|applet|base|form)\b/i, reason: "禁止嵌入 iframe/object/form 等外部框架標籤" },
   { re: /<meta\b[^>]*http-equiv/i, reason: "禁止設定 meta http-equiv" },
-  { re: /\b(?:src|href|action|poster)\s*=\s*["']?\s*(?:https?:|\/\/)/i, reason: "禁止外部網路資源連結" },
-  { re: /<[a-z][^>]*[\s/]on[a-z]+\s*=/i, reason: "禁止內嵌事件處理屬性" },
   { re: /@import\s+(?:url\()?\s*["']?\s*(?:https?:|\/\/)/i, reason: "禁止外部樣式匯入" },
   { re: /url\(\s*["']?\s*(?:https?:|\/\/)/i, reason: "禁止外部背景網址" },
-  { re: /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\s*\(/i, reason: "禁止網路連線 API" },
-  { re: /\b(?:document\.cookie|localStorage|sessionStorage)\b/i, reason: "禁止存取儲存體或 Cookie" },
-  { re: /\bwindow\.open\s*\(/i, reason: "禁止開啟外部視窗" },
-  { re: /\b(?:window\.)?(?:parent|top)\s*\./i, reason: "禁止跨框存取上層視窗" },
-  { re: /\b(?:window|self|globalThis|parent|top|document)\s*\[/i, reason: "禁止以中括號動態存取全域物件" },
+  { re: /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)(?:\?\.)?\s*\(/i, reason: "禁止網路連線 API" },
+  { re: /\b(?:document(?:\?\.\s*|\s*\.\s*)cookie|localStorage|sessionStorage)\b/i, reason: "禁止存取儲存體或 Cookie" },
+  {
+    re: /\b(?:window|self|globalThis)(?:\?\.\s*|\s*\.\s*)(?:open|parent|top|frames|location|localStorage|sessionStorage|document|fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\b/i,
+    reason: "禁止存取受限全域視窗或網路屬性",
+  },
+  { re: /\b(?:parent|top|frames)(?:\?\.\s*|\s*\.\s*|\s*\[\s*)/i, reason: "禁止跨框存取上層或子框視窗" },
+  { re: /\b(?:window|self|globalThis|parent|top|document|frames)(?:\?\.\s*|\s*)\[/i, reason: "禁止以中括號動態存取全域物件" },
 ];
+
+const URL_ATTRS = new Set(["src", "href", "action", "poster", "formaction", "xlink:href"]);
+const HTML_OPEN_TAG_RE = /<[a-z][a-z0-9:-]*(?:[\s/](?:"[^"]*"|'[^']*'|[^>"'])*)?>/gi;
+const HTML_TAG_ATTR_RE = /(?:^|[\s/]|(?<=["']))([a-z][a-z0-9:-]*)(?:\s*(=)\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']*)))?/gi;
 
 export function sanitizeSimulationHtml(rawHtml: string): string {
   const trimmed = rawHtml.trim();
@@ -70,6 +73,37 @@ export function sanitizeSimulationHtml(rawHtml: string): string {
   for (const { re, reason } of FORBIDDEN_PATTERNS) {
     if (re.test(trimmed)) {
       throw new AppError(422, `互動模擬未通過安全檢查：${reason}。`);
+    }
+  }
+  HTML_OPEN_TAG_RE.lastIndex = 0;
+  let openTagMatch: RegExpExecArray | null;
+  while ((openTagMatch = HTML_OPEN_TAG_RE.exec(trimmed))) {
+    const tag = openTagMatch[0];
+    const sepIdx = tag.search(/[\s/>]/);
+    if (sepIdx < 0) continue;
+    const tagName = tag.slice(1, sepIdx).toLowerCase();
+    const attrChunk = tag.slice(sepIdx, tag.endsWith(">") ? -1 : undefined);
+    HTML_TAG_ATTR_RE.lastIndex = 0;
+    let attrMatch: RegExpExecArray | null;
+    while ((attrMatch = HTML_TAG_ATTR_RE.exec(attrChunk))) {
+      const attrName = attrMatch[1].toLowerCase();
+      const hasEq = Boolean(attrMatch[2]);
+      const attrVal = attrMatch[3] ?? attrMatch[4] ?? attrMatch[5] ?? "";
+      if (tagName === "meta" && attrName === "http-equiv") {
+        throw new AppError(422, "互動模擬未通過安全檢查：禁止設定 meta http-equiv。");
+      }
+      if (hasEq && /^on[a-z]+$/.test(attrName)) {
+        throw new AppError(422, "互動模擬未通過安全檢查：禁止內嵌事件處理屬性。");
+      }
+      if (hasEq && URL_ATTRS.has(attrName)) {
+        if (/&#|&colon;/i.test(attrVal)) {
+          throw new AppError(422, "互動模擬未通過安全檢查：禁止外部網路資源連結。");
+        }
+        const normalized = attrVal.replace(/[\u0000-\u0020]+/g, "");
+        if (/^(?:https?:|\/\/|javascript:|vbscript:|data:(?!image\/(?:png|jpeg|gif|webp|svg\+xml);))/i.test(normalized)) {
+          throw new AppError(422, "互動模擬未通過安全檢查：禁止外部網路資源連結。");
+        }
+      }
     }
   }
   let scriptDepth = 0;
@@ -361,7 +395,7 @@ export function buildDeterministicSimulation(opts: {
 </div>
 <script>
 (function(){
-  var data = ${safeJsonForScript(payload)};
+  var data = ${encodePayloadForScript(payload)};
   var active = data.items.map(function(){ return true; });
   var weightEl = document.getElementById("sim-weight");
   var weightVal = document.getElementById("sim-weight-val");
@@ -434,7 +468,7 @@ export function buildDeterministicSimulation(opts: {
 </div>
 <script>
 (function(){
-  var data = ${safeJsonForScript(payload)};
+  var data = ${encodePayloadForScript(payload)};
   var step = 0;
   var codeBox = document.getElementById("sim-code-box");
   var badge = document.getElementById("sim-step-badge");
@@ -500,7 +534,7 @@ export function buildDeterministicSimulation(opts: {
 </div>
 <script>
 (function(){
-  var data = ${safeJsonForScript(payload)};
+  var data = ${encodePayloadForScript(payload)};
   var vals = data.params.map(function(p){ return p.base; });
   var slidersEl = document.getElementById("sim-sliders");
   var chart = document.getElementById("sim-chart");
@@ -581,7 +615,7 @@ export function buildDeterministicSimulation(opts: {
 </div>
 <script>
 (function(){
-  var data = ${safeJsonForScript(payload)};
+  var data = ${encodePayloadForScript(payload)};
   var active = 0;
   var stressed = false;
   var svg = document.getElementById("sim-flow-svg");
