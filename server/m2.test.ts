@@ -4,12 +4,14 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { Response as UndiciResponse } from "undici";
 import { createApp } from "./app.js";
 import { AppError } from "./errors.js";
-import { extractBlocksFromPdf } from "./extractor.js";
+import { createPinnedLookup, extractBlocksFromPdf, fetchPublicPageSource } from "./extractor.js";
 import {
   buildDeterministicSimulation,
   buildDeterministicStepper,
+  extractPassageSignals,
   sanitizeSimulationHtml,
 } from "./interactive.js";
 import { ReaderStore } from "./store.js";
@@ -166,14 +168,93 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     "<script>top?.location?.assign('https://evil.test')</script>",
     "<div>hi</div></script><script>alert(1)</script>",
     "<script>var x = '</script><script>alert(1)</script>'</script>",
+    // Unmatched quotes / malformed tags / HTML5 entities / foreign content / CSS & JS obfuscations
+    '<img src=x" onerror=alert(1)>',
+    "<img src=x' onerror=alert(1)>",
+    '<svg id=a\' onload="alert(1)"></svg>',
+    '<svg onload=alert(1) data-x=">',
+    '<svg onload=alert(1) data-x="><div class="foo">',
+    '<img src="https://evil.test/x.png" data-x=">',
+    '<div onclick=alert(1)//">hi</div>',
+    '<div title="a" " onclick=alert(1)>',
+    '<meta content=">" name=x" http-equiv=refresh>',
+    "<div data-x=\"1\" data-y=2' onclick=alert(1)>x</div>",
+    '<a href="java&Tab;script:alert(1)">click</a>',
+    '<a href="java&NewLine;script:alert(1)">click</a>',
+    '<img srcset="https://evil.test/a.png 1x, #ok 2x">',
+    '<a href="#ok" ping="https://evil.test">go</a>',
+    '<svg><a xlink:href="javascript:alert(1)"><text>x</text></a></svg>',
+    '<svg><use href="https://evil.test/a.svg#x"/></svg>',
+    '<math><mi href="javascript:alert(1)">x</mi></math>',
+    "<template><img src=x onerror=alert(1)></template>",
+    "<noscript><img src=x onerror=alert(1)></noscript>",
+    '<svg><set attributeName="onload" to="alert(1)"/></svg>',
+    '<script src="data:image/png;base64,AA=="></script>',
+    '<style>body{background:url(/*x*/"https://evil.test/a.png")}</style>',
+    '<style>@import /*x*/ "https://evil.test/a.css";</style>',
+    "<style>body{background:url(\\68 ttps://evil.test/a.png)}</style>",
+    "<div style=\"background:url(/*x*/'https://evil.test/a.png')\">hi</div>",
+    '<script>window ?.open("https://evil.test")</script>',
+    "<script>document ?.cookie</script>",
+    '<script>fetch ?.("/api/pages")</script>',
+    "<script>self ?.['parent']</script>",
+    "<script>top ?.location</script>",
+    '<script>window/**/.open("https://evil.test")</script>',
+    "<script>document/*a*/./*b*/cookie</script>",
+    '<script>fetch/**/.name; fetch/**/("/api/pages")</script>',
+    '<script>window//x\n.open("https://evil.test")</script>',
+    '<script>var r = /"/; window/**/.open("https://evil.test")</script>',
+    '<script>var s = "//"; window.open("https://evil.test")</script>',
+    '<script>var t = `${window/**/.open("https://evil.test")}`;</script>',
+    '<script>Reflect.get(self, "parent")</script>',
+    "<script>Reflect ?.['get'](self, 'parent')</script>",
+    '<script>new Function("alert(1)")()</script>',
+    '<script>new /*x*/ Function("alert(1)")()</script>',
+    '<script>Function("alert(1)")()</script>',
+    '<script>import("/api/pages")</script>',
+    '<script>import /*x*/ ("/api/pages")</script>',
+    '<script>[].filter.constructor("alert(1)")()</script>',
+    '<script>""["constructor"]</script>',
+    "<script>var { open, fetch } = window</script>",
+    "<script>const { cookie } = document</script>",
+    "<script>var w = window</script>",
+    '<script>const f = fetch; f("/api/pages")</script>',
+    '<script>eval("alert(1)")</script>',
+    '<script>(0, eval)("alert(1)")</script>',
+    '<script>win\\u0064ow.open("https://evil.test")</script>',
   ]) {
     assert.throws(() => sanitizeSimulationHtml(unsafe), `expected unsafe HTML rejected: ${unsafe}`);
   }
 
-  // Clean HTML with '>' inside quoted attribute or harmless data-* string must still pass
+  // Clean HTML with '>' inside quoted attribute or harmless data-* / SVG / JS patterns must still pass
   assert.doesNotThrow(() =>
     sanitizeSimulationHtml('<div class="sim-wrap" title="a > b" data-note="onclick=1"><a href="#sec">ok</a></div>'),
   );
+  assert.doesNotThrow(() =>
+    sanitizeSimulationHtml(
+      '<div class="sim-wrap"><svg viewBox="0 0 100 100"><animate attributeName="opacity" from="0" to="1" dur="1s"/><use href="#icon"/></svg><script>window.addEventListener("resize", function(){ var top = 10; var y = top; });</script></div>',
+    ),
+  );
+  assert.doesNotThrow(() =>
+    sanitizeSimulationHtml('<div class="sim-wrap"><p>CSS @import and fetch() and document.cookie explained in text</p></div>'),
+  );
+  assert.doesNotThrow(() =>
+    sanitizeSimulationHtml(
+      `<div class="sim-wrap"><canvas id="c"></canvas><script>// lead comment\n/* block */\nclass Particle { constructor(x, y) { this.x = x; this.y = y; } }\nvar label = "Click to fetch next step // Reflect on result";\nvar s = String(label).replace(/"/g, "&quot;");\nvar b = atob("AA//BB==");\n</script></div>`,
+    ),
+  );
+
+  // CJK page/section ordinal markers like "第 1 頁" must not become bogus numeric parameters/quizzes
+  const ordSignals = extractPassageSignals(undefined, "第 1 頁\nFrame budget is 16.6ms");
+  assert.equal(ordSignals.numbers.length, 1);
+  assert.equal(ordSignals.numbers[0].value, 16.6);
+  assert.equal(ordSignals.numbers[0].unit, "ms");
+
+  const ordOnlyStepper = buildDeterministicStepper({
+    block: { id: "p-ord", kind: "paragraph", text: "第 1 頁" },
+    pageTitle: "Page Header",
+  });
+  assert.ok(!ordOnlyStepper.checks[0].question.includes("「第」"));
 
   // Zero-value numeric simulation + stepper edge case & SVG escaping
   const zeroSim = buildDeterministicSimulation({
@@ -438,6 +519,7 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
     assert.ok(frameCsp.includes("script-src 'unsafe-inline'"));
     assert.ok(frameCsp.includes("connect-src 'none'"));
     assert.ok(frameCsp.includes("frame-ancestors 'self'"));
+    assert.ok(frameCsp.includes("sandbox allow-scripts"));
     const frameHtml = await frameRes.text();
     assert.ok(decodeSimPayload(frameHtml).includes("16.6"));
 
@@ -551,4 +633,111 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
     store.close();
     rmSync(tempDataDir, { recursive: true, force: true });
   }
+});
+
+test("Extractor SSRF protection: pinned DNS lookup, mixed public/private rejection, redirect SSRF, and hop cap", async () => {
+  // 1. createPinnedLookup returns all matching entries when options.all === true, filters by family, errors if missing
+  const pinned = createPinnedLookup([
+    { address: "93.184.216.34", family: 4 },
+    { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
+  ]);
+  await new Promise<void>((resolve, reject) => {
+    pinned("example.com", { all: true }, (err, list) => {
+      if (err) return reject(err);
+      assert.equal((list as Array<{ address: string }>).length, 2);
+      resolve();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    pinned("example.com", { family: 6 }, (err, addr, fam) => {
+      if (err) return reject(err);
+      assert.equal(addr, "2606:2800:220:1:248:1893:25c8:1946");
+      assert.equal(fam, 6);
+      resolve();
+    });
+  });
+  await new Promise<void>((resolve) => {
+    const ipv4Only = createPinnedLookup([{ address: "93.184.216.34", family: 4 }]);
+    ipv4Only("example.com", { family: 6 }, (err) => {
+      assert.ok(err instanceof Error);
+      resolve();
+    });
+  });
+
+  // 2. Mixed [public, 127.0.0.1] resolution rejected before fetch runs
+  let fetchCalled = false;
+  await assert.rejects(
+    () =>
+      fetchPublicPageSource("https://rebinding.example/article", new AbortController().signal, {
+        lookup: async () => [
+          { address: "93.184.216.34", family: 4 },
+          { address: "127.0.0.1", family: 4 },
+        ],
+        fetch: (async () => {
+          fetchCalled = true;
+          return new UndiciResponse("ok");
+        }) as typeof import("undici").fetch,
+      }),
+    (err: unknown) => err instanceof AppError && err.status === 400,
+  );
+  assert.equal(fetchCalled, false);
+
+  // 3. Single lookup per hop with pinned Agent dispatcher (second DNS answer 127.0.0.1 is never queried)
+  let lookupCalls = 0;
+  let receivedDispatcher: unknown;
+  const okSource = await fetchPublicPageSource("https://stable.example/page", new AbortController().signal, {
+    lookup: async () => {
+      lookupCalls += 1;
+      if (lookupCalls === 1) return [{ address: "93.184.216.34", family: 4 }];
+      return [{ address: "127.0.0.1", family: 4 }];
+    },
+    fetch: (async (_url, init) => {
+      receivedDispatcher = init?.dispatcher;
+      return new UndiciResponse("<html><body><p>Public page</p></body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }) as typeof import("undici").fetch,
+  });
+  assert.equal(lookupCalls, 1);
+  assert.ok(receivedDispatcher, "expected pinned Agent dispatcher passed to fetch");
+  assert.equal(okSource.kind, "html");
+
+  // 4. 302 redirect to loopback literal, http:// downgrade, or internal DNS target rejected before redirected fetch
+  for (const badLocation of [
+    "https://127.0.0.1/secret",
+    "http://example.com/downgrade",
+    "https://metadata.internal.example/latest",
+  ]) {
+    let hop = 0;
+    await assert.rejects(
+      () =>
+        fetchPublicPageSource("https://redirector.example/start", new AbortController().signal, {
+          lookup: async (host: string) => {
+            if (host === "metadata.internal.example") return [{ address: "169.254.169.254", family: 4 }];
+            return [{ address: "93.184.216.34", family: 4 }];
+          },
+          fetch: (async () => {
+            hop += 1;
+            if (hop > 1) throw new Error("redirected fetch must not run for unsafe target");
+            return new UndiciResponse(null, { status: 302, headers: { location: badLocation } });
+          }) as typeof import("undici").fetch,
+        }),
+      (err: unknown) => err instanceof AppError && err.status === 400,
+    );
+    assert.equal(hop, 1);
+  }
+
+  // 5. Redirect cap (>3 hops) rejected with 422
+  await assert.rejects(
+    () =>
+      fetchPublicPageSource("https://loop.example/0", new AbortController().signal, {
+        lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+        fetch: (async (u) => {
+          const next = Number(String(u).split("/").pop() || "0") + 1;
+          return new UndiciResponse(null, { status: 302, headers: { location: `https://loop.example/${next}` } });
+        }) as typeof import("undici").fetch,
+      }),
+    (err: unknown) => err instanceof AppError && err.status === 422,
+  );
 });

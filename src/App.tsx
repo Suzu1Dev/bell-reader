@@ -1331,7 +1331,11 @@ export default function App() {
                       className="icon-ghost-btn"
                       aria-label="更多頁面操作"
                       aria-expanded={moreMenuOpen}
-                      onClick={() => setMoreMenuOpen((v) => !v)}
+                      onClick={() => {
+                        setInteractiveMenuOpen(false);
+                        setDensityMenuOpen(false);
+                        setMoreMenuOpen((v) => !v);
+                      }}
                     >
                       <MoreHorizontal size={15} />
                     </button>
@@ -1453,6 +1457,7 @@ export default function App() {
                       aria-label="選擇標註數量與頻率"
                       aria-expanded={densityMenuOpen}
                       onClick={() => {
+                        setInteractiveMenuOpen(false);
                         setMoreMenuOpen(false);
                         setDensityMenuOpen((v) => !v);
                       }}

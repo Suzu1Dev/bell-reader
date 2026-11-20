@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { LookupAddress, LookupOptions } from "node:dns";
 import { lookup } from "node:dns/promises";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -67,6 +68,31 @@ function safeImageUrl(raw: string | undefined, baseUrl: URL): string | undefined
   }
 }
 
+export interface PublicFetchDeps {
+  lookup?: (hostname: string, options: { all: true }) => Promise<LookupAddress[]>;
+  fetch?: typeof safeFetch;
+}
+
+export function createPinnedLookup(addresses: LookupAddress[]) {
+  return (
+    _host: string,
+    options: LookupOptions,
+    callback: (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void,
+  ) => {
+    const reqFamily = options.family === "IPv4" ? 4 : options.family === "IPv6" ? 6 : options.family;
+    const matching = reqFamily
+      ? addresses.filter((item) => item.family === reqFamily)
+      : addresses;
+    const selected = matching[0];
+    if (!selected) {
+      callback(new Error("No public address"), "", 4);
+      return;
+    }
+    if (options.all) callback(null, matching);
+    else callback(null, selected.address, selected.family);
+  };
+}
+
 async function fetchPublicResource(
   input: string,
   signal: AbortSignal,
@@ -78,14 +104,18 @@ async function fetchPublicResource(
     sizeError: string | ((maxBytes: number) => string);
     timeoutMs: number;
   },
+  deps?: PublicFetchDeps,
 ): Promise<{ buffer: Buffer; finalUrl: URL; contentType: string }> {
   let url = validatePublicUrl(input);
   const timeout = AbortSignal.any([signal, AbortSignal.timeout(opts.timeoutMs)]);
+  const doFetch = deps?.fetch ?? safeFetch;
 
   for (let redirects = 0; redirects <= 3; redirects++) {
     timeout.throwIfAborted();
     const hostname = url.hostname.replace(/^\[|\]$/g, "");
-    const addresses = await lookup(hostname, { all: true });
+    const addresses = deps?.lookup
+      ? await deps.lookup(hostname, { all: true })
+      : await lookup(hostname, { all: true });
     timeout.throwIfAborted();
     if (!addresses.length || addresses.some((entry) => !isPublicAddress(entry.address))) {
       throw new AppError(400, "此網址解析到非公開網路，無法讀取。");
@@ -93,22 +123,11 @@ async function fetchPublicResource(
     const dispatcher = new Agent({
       connect: {
         timeout: 7000,
-        lookup: (_host, options, callback) => {
-          const matching = options.family
-            ? addresses.filter((item) => item.family === options.family)
-            : addresses;
-          const selected = matching[0];
-          if (!selected) {
-            callback(new Error("No public address"), "", 4);
-            return;
-          }
-          if (options.all) callback(null, matching);
-          else callback(null, selected.address, selected.family);
-        },
+        lookup: createPinnedLookup(addresses),
       },
     });
     try {
-      const response = await safeFetch(url, {
+      const response = await doFetch(url, {
         dispatcher,
         signal: timeout,
         redirect: "manual",
@@ -194,18 +213,27 @@ function isPdfMimeOrUrl(contentType: string, url: URL): boolean {
   return /^application\/octet-stream\b/i.test(contentType) && url.pathname.toLowerCase().endsWith(".pdf");
 }
 
-export async function fetchPublicPageSource(input: string, signal: AbortSignal): Promise<PublicPageSource> {
-  const { buffer, finalUrl, contentType } = await fetchPublicResource(input, signal, {
-    accept: "text/html,text/plain,text/markdown;q=0.9,application/xhtml+xml;q=0.9,application/pdf;q=0.9",
-    contentTypePattern: /text\/|application\/(xhtml\+xml|xml|json|pdf|octet-stream)/i,
-    invalidTypeError: "此網址不是可閱讀的文字網頁或 PDF 文件，請直接貼上內容。",
-    maxBytes: (ct, u) => (isPdfMimeOrUrl(ct, u) ? MAX_PDF_BYTES : MAX_BYTES),
-    sizeError: (max) =>
-      max >= MAX_PDF_BYTES
-        ? "PDF 檔案超過 15 MB 上限，無法擷取。"
-        : "網頁超過 1.5 MB 上限，請直接貼上想讀的段落。",
-    timeoutMs: 18_000,
-  });
+export async function fetchPublicPageSource(
+  input: string,
+  signal: AbortSignal,
+  deps?: PublicFetchDeps,
+): Promise<PublicPageSource> {
+  const { buffer, finalUrl, contentType } = await fetchPublicResource(
+    input,
+    signal,
+    {
+      accept: "text/html,text/plain,text/markdown;q=0.9,application/xhtml+xml;q=0.9,application/pdf;q=0.9",
+      contentTypePattern: /text\/|application\/(xhtml\+xml|xml|json|pdf|octet-stream)/i,
+      invalidTypeError: "此網址不是可閱讀的文字網頁或 PDF 文件，請直接貼上內容。",
+      maxBytes: (ct, u) => (isPdfMimeOrUrl(ct, u) ? MAX_PDF_BYTES : MAX_BYTES),
+      sizeError: (max) =>
+        max >= MAX_PDF_BYTES
+          ? "PDF 檔案超過 15 MB 上限，無法擷取。"
+          : "網頁超過 1.5 MB 上限，請直接貼上想讀的段落。",
+      timeoutMs: 18_000,
+    },
+    deps,
+  );
 
   if (isPdfMimeOrUrl(contentType, finalUrl)) {
     if (!hasPdfMagicHeader(buffer)) {
