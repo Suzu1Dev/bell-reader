@@ -340,6 +340,25 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     '<script>let a = "a"; for (let i = 0; i < 2; i++) { const F = []["map"][a + "constructor"]; a = ""; }</script>',
     '<script>let a = "con"; function getF(){ return []["map"][a]; } a += "structor"; getF();</script>',
     '<script>let k = 0; function f(){ let m = k; return []["map"][m]; } k = "constructor"; f();</script>',
+    // Iteration 9 AST bypass vectors (param + dead-branch var hoisting, class static block shadowing, DOM Event window/document leakage)
+    '<script>function f(k){ if (false) { var k = 0; } return []["map"][k]; } f("constructor");</script>',
+    '<script>function f(k = "constructor"){ if (false) { var k = 0; } return []["map"][k]; } f();</script>',
+    '<script>function f(k){ if (false) { var k = 0; } return document.body[k]; } f("ownerDocument");</script>',
+    '<script>function f({ a: k }){ if (false) { var k = 0; } return []["map"][k]; } f({ a: "constructor" });</script>',
+    '<script>function f(k){ var m = k; if (false) { var k = 0; } return []["map"][m]; } f("constructor");</script>',
+    '<script>class C { static { var Number = () => "constructor"; []["map"][Number()]; } }</script>',
+    '<script>class C { static { function Number(){ return "constructor"; } []["map"][Number()]; } }</script>',
+    '<script>class C { static { var Math = { floor: () => "constructor" }; []["map"][Math.floor()]; } }</script>',
+    '<script>class C { static { var parseInt = () => "ownerDocument"; document.body[parseInt()]; } }</script>',
+    '<script>class C { static { var parseFloat = () => "constructor"; []["map"][parseFloat()]; } }</script>',
+    '<script>let w; window.addEventListener("probe", e => { w = e.currentTarget; });</script>',
+    '<script>let d; document.body.addEventListener("probe", e => { d = e.composedPath()[2]; });</script>',
+    '<script>window.addEventListener("click", e => e.view);</script>',
+    '<script>window.addEventListener("click", e => e.srcElement);</script>',
+    '<script>window.addEventListener("resize", e => e.target);</script>',
+    '<script>document.body.dispatchEvent(new Event("probe", { bubbles: true }));</script>',
+    '<script>window.addEventListener("probe", e => { const { currentTarget } = e; });</script>',
+    '<script>window.addEventListener("probe", e => { const ce = e["createElement"]; });</script>',
   ]) {
     assert.throws(() => sanitizeSimulationHtml(unsafe), `expected unsafe HTML rejected: ${unsafe}`);
   }

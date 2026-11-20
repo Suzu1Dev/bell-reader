@@ -162,6 +162,31 @@ const FORBIDDEN_PROPS = new Set([
   "__lookupSetter__",
   "__defineSetter__",
   "postMessage",
+  "target",
+  "currentTarget",
+  "composedPath",
+  "view",
+  "srcElement",
+  "dispatchEvent",
+  "navigation",
+  "navigate",
+  "open",
+  "parent",
+  "top",
+  "frames",
+  "self",
+  "globalThis",
+  "opener",
+  "eval",
+  "Function",
+  "fetch",
+  "XMLHttpRequest",
+  "WebSocket",
+  "localStorage",
+  "sessionStorage",
+  "indexedDB",
+  "document",
+  "window",
 ]);
 
 const FORBIDDEN_DESTRUCTURE_GLOBALS = new Set([
@@ -183,6 +208,8 @@ const FORBIDDEN_DESTRUCTURE_GLOBALS = new Set([
   "opener",
   "Reflect",
   "Proxy",
+  "createElement",
+  "createElementNS",
 ]);
 
 const ALLOWED_SCRIPT_TYPES = new Set(["", "text/javascript", "application/javascript"]);
@@ -424,6 +451,18 @@ function collectMutatedNumericBuiltins(sf: ts.SourceFile): Set<string> {
       if (!(p && ts.isPropertyAccessExpression(p) && p.expression === node)) {
         mutated.add("Math");
       }
+    } else if (ts.isVariableDeclaration(node) || ts.isParameter(node)) {
+      const names = new Set<string>();
+      collectBindingNames(node.name, names);
+      for (const n of names) {
+        if (WRITABLE_NUMERIC_BUILTINS.has(n)) mutated.add(n);
+      }
+    } else if (
+      (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) &&
+      node.name &&
+      WRITABLE_NUMERIC_BUILTINS.has(node.name.text)
+    ) {
+      mutated.add(node.name.text);
     }
     ts.forEachChild(node, walk);
   };
@@ -708,7 +747,7 @@ function validateBracketOrComputedKey(
   }
   const resolved = evalStaticString(expr, scope);
   if (resolved !== null) {
-    if (FORBIDDEN_PROPS.has(resolved)) {
+    if (FORBIDDEN_PROPS.has(resolved) || resolved === "createElement" || resolved === "createElementNS") {
       throw new AppError(422, "互動模擬未通過安全檢查：禁止存取受限屬性或原型鏈。");
     }
     return;
@@ -820,6 +859,14 @@ function validateSimulationScript(rawScript: string): void {
 
     if (ts.isPropertyAccessExpression(node) && FORBIDDEN_PROPS.has(node.name.text)) {
       throw new AppError(422, "互動模擬未通過安全檢查：禁止存取受限屬性或原型鏈。");
+    }
+
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      (node.name.text === "createElement" || node.name.text === "createElementNS") &&
+      !(ts.isIdentifier(node.expression) && node.expression.text === "document" && !isShadowed("document", scope))
+    ) {
+      throw new AppError(422, "互動模擬未通過安全檢查：禁止間接存取受限文件建立方法。");
     }
 
     if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name) && (node.name.text === "constructor" || node.name.text === "__proto__")) {
@@ -978,6 +1025,14 @@ function validateSimulationScript(rawScript: string): void {
       return;
     }
 
+    if (ts.isClassStaticBlockDeclaration(node)) {
+      const staticScope = createSimScope(true, scope);
+      hoistVarsInScope(node.body, staticScope.vars);
+      collectBlockLexicals(node.body.statements, staticScope.lexicals);
+      ts.forEachChild(node.body, (child) => visit(child, staticScope, staticScope, inClass));
+      return;
+    }
+
     if (
       ts.isPropertyDeclaration(node) &&
       node.name &&
@@ -1030,6 +1085,11 @@ function validateSimulationScript(rawScript: string): void {
         if (ts.isBlock(node.body)) {
           hoistVarsInScope(node.body, bodyScope.vars);
           collectBlockLexicals(node.body.statements, bodyScope.lexicals);
+        }
+        for (const pName of paramScope.nonNumericVars) {
+          if (bodyScope.vars.has(pName)) {
+            bodyScope.nonNumericVars.add(pName);
+          }
         }
         visit(node.body, bodyScope, bodyScope, nextInClass);
       }
