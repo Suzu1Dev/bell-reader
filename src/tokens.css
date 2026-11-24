@@ -87,7 +87,7 @@
   --panel: #FAF9F6;
   --raised: #FFFFFF;
   --raised-2: #F0EEE8;
-  --overlay: rgba(255, 255, 255, .97);
+  --overlay: #FFFFFF;
 
   --text: #18181B;
   --text-2: #3F3F46;
@@ -166,7 +166,7 @@
   --panel: #171512;
   --raised: #221F1B;
   --raised-2: #2C2722;
-  --overlay: rgba(31, 28, 24, .97);
+  --overlay: #1F1C18;
 
   --text: #EFE8DC;
   --text-2: #C5BCB0;

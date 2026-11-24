@@ -67,8 +67,16 @@ export function securityMiddleware(allowedOrigins: readonly string[]) {
 
     if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
       const contentType = req.headers["content-type"] ?? "";
-      if (!/^application\/json\b/i.test(contentType)) {
-        res.status(415).json({ error: "寫入請求必須使用 application/json。" });
+      const isPdfUpload = req.method === "POST" && req.path === "/api/pages/pdf";
+      const validType = isPdfUpload
+        ? /^application\/(pdf|octet-stream)\b/i.test(contentType)
+        : /^application\/json\b/i.test(contentType);
+      if (!validType) {
+        res.status(415).json({
+          error: isPdfUpload
+            ? "PDF 上傳必須使用 application/pdf 或 application/octet-stream。"
+            : "寫入請求必須使用 application/json。",
+        });
         return;
       }
     }

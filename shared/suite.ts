@@ -193,9 +193,84 @@ export function parseReaderHandoff(
   };
 }
 
+export function buildExplainHandoffText(page: {
+  sourceKind: "url" | "paste" | "pdf";
+  url?: string;
+  siteName?: string;
+  title: string;
+  excerpt: string;
+  topic?: string;
+  summary?: string;
+  hasPdf?: boolean;
+  pdfPageCount?: number;
+  blocks: Array<{ kind: string; text: string }>;
+  annotations: Array<{ quote: string; note: string }>;
+  interactiveBlocks?: Array<{ kind: string; title: string; summary?: string }>;
+}): string {
+  const isPdf = Boolean(page.hasPdf || page.sourceKind === "pdf");
+  const sourceLabel = isPdf
+    ? `PDF 文件（${Math.max(1, page.pdfPageCount ?? 1)} 頁）`
+    : page.siteName?.trim() || "保存文章";
+  const headerLines = [`來源：${sourceLabel}`];
+  if (page.url?.trim()) headerLines.push(`網址：${page.url.trim()}`);
+  if (page.topic?.trim() && page.topic.trim() !== "未分類") {
+    headerLines.push(`主題：${page.topic.trim()}`);
+  }
+
+  let bodySection = "";
+  const summary = page.summary?.trim();
+  if (summary) {
+    bodySection = `摘要：${summary}`;
+  } else {
+    const proseParts: string[] = [];
+    const excerpt = page.excerpt?.trim();
+    if (excerpt) proseParts.push(excerpt);
+    let proseChars = excerpt ? [...excerpt].length : 0;
+    for (const block of page.blocks) {
+      if (block.kind === "heading" || block.kind === "image") continue;
+      const text = block.text.trim();
+      if (!text) continue;
+      const chars = [...text];
+      if (excerpt && (text.startsWith(excerpt) || excerpt.startsWith(chars.slice(0, 60).join("")))) continue;
+      const sliceLen = Math.min(chars.length, 360);
+      if (proseChars + sliceLen > 720 && proseParts.length > 0) break;
+      proseParts.push(chars.slice(0, 360).join(""));
+      proseChars += sliceLen;
+      if (proseParts.length >= 4) break;
+    }
+    if (proseParts.length) bodySection = `內容節錄：\n${proseParts.join("\n")}`;
+  }
+
+  const notesDigest = page.annotations
+    .slice(0, 4)
+    .map((a) => `• 「${a.quote.trim()}」→ ${a.note.trim()}`)
+    .join("\n");
+
+  const interactiveDigest = (page.interactiveBlocks ?? [])
+    .slice(0, 3)
+    .map(
+      (ib) =>
+        `• [${ib.kind === "simulation" ? "互動模擬" : "概念步進"}] ${ib.title.trim()}${
+          ib.summary?.trim() ? `：${ib.summary.trim()}` : ""
+        }`,
+    )
+    .join("\n");
+
+  const full = [
+    headerLines.join("\n"),
+    bodySection,
+    notesDigest ? `重點標註：\n${notesDigest}` : "",
+    interactiveDigest ? `互動區塊：\n${interactiveDigest}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  return cleanText(full, SUITE_LIMITS.handoffText).text;
+}
+
 export function explainDraftHref(
   explainOrigin: string | undefined,
-  input: { text: string; title?: string; back?: string },
+  input: { text: string; title?: string; back?: string; source?: string; url?: string; pdf?: string },
   currentHostname = "",
 ): string | undefined {
   const origin = safeSuiteOrigin(explainOrigin, currentHostname);
@@ -208,6 +283,21 @@ export function explainDraftHref(
   }
   if (input.back && allowedSuiteRoute("reader", input.back, SUITE_LIMITS.back)) {
     params.set("back", input.back);
+  }
+  if (input.source) {
+    const cleanSource = cleanText(input.source.replace(/[\r\n\t]/g, " "), 40);
+    if (cleanSource.text) params.set("source", cleanSource.text);
+  }
+  if (input.url) {
+    const trimmed = input.url.trim();
+    if (/^https?:\/\/\S+$/i.test(trimmed)) {
+      const cleanUrl = cleanText(trimmed, SUITE_LIMITS.href);
+      if (cleanUrl.text) params.set("url", cleanUrl.text);
+    }
+  }
+  if (input.pdf) {
+    const cleanPdf = cleanText(input.pdf.replace(/[\r\n\t]/g, " "), SUITE_LIMITS.handoffTitle);
+    if (cleanPdf.text) params.set("pdf", cleanPdf.text);
   }
   return `${origin}/#/explain?${params.toString()}`;
 }

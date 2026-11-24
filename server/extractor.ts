@@ -1,5 +1,11 @@
+import { spawn } from "node:child_process";
+import type { LookupAddress, LookupOptions } from "node:dns";
 import { lookup } from "node:dns/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { inflateSync } from "node:zlib";
 import { Agent, fetch as safeFetch } from "undici";
 import ipaddr from "ipaddr.js";
 import * as cheerio from "cheerio";
@@ -8,6 +14,7 @@ import type { ReaderBlock } from "../shared/types.js";
 import { AppError } from "./errors.js";
 
 const MAX_BYTES = 1_500_000;
+export const MAX_PDF_BYTES = 15 * 1024 * 1024;
 const MAX_BLOCKS = 400;
 const MAX_BLOCK_CHARS = 2400;
 
@@ -30,8 +37,9 @@ export function validatePublicUrl(input: string): URL {
   } catch {
     throw new AppError(400, "請輸入完整的 HTTPS 網址。");
   }
-  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.+$/, "").toLowerCase();
   if (
+    !host ||
     url.protocol !== "https:" ||
     url.username ||
     url.password ||
@@ -61,6 +69,31 @@ function safeImageUrl(raw: string | undefined, baseUrl: URL): string | undefined
   }
 }
 
+export interface PublicFetchDeps {
+  lookup?: (hostname: string, options: { all: true }) => Promise<LookupAddress[]>;
+  fetch?: typeof safeFetch;
+}
+
+export function createPinnedLookup(addresses: LookupAddress[]) {
+  return (
+    _host: string,
+    options: LookupOptions,
+    callback: (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void,
+  ) => {
+    const reqFamily = options.family === "IPv4" ? 4 : options.family === "IPv6" ? 6 : options.family;
+    const matching = reqFamily
+      ? addresses.filter((item) => item.family === reqFamily)
+      : addresses;
+    const selected = matching[0];
+    if (!selected) {
+      callback(new Error("No public address"), "", 4);
+      return;
+    }
+    if (options.all) callback(null, matching);
+    else callback(null, selected.address, selected.family);
+  };
+}
+
 async function fetchPublicResource(
   input: string,
   signal: AbortSignal,
@@ -68,18 +101,22 @@ async function fetchPublicResource(
     accept: string;
     contentTypePattern: RegExp;
     invalidTypeError: string;
-    maxBytes: number;
-    sizeError: string;
+    maxBytes: number | ((contentType: string, url: URL) => number);
+    sizeError: string | ((maxBytes: number) => string);
     timeoutMs: number;
   },
+  deps?: PublicFetchDeps,
 ): Promise<{ buffer: Buffer; finalUrl: URL; contentType: string }> {
   let url = validatePublicUrl(input);
   const timeout = AbortSignal.any([signal, AbortSignal.timeout(opts.timeoutMs)]);
+  const doFetch = deps?.fetch ?? safeFetch;
 
   for (let redirects = 0; redirects <= 3; redirects++) {
     timeout.throwIfAborted();
     const hostname = url.hostname.replace(/^\[|\]$/g, "");
-    const addresses = await lookup(hostname, { all: true });
+    const addresses = deps?.lookup
+      ? await deps.lookup(hostname, { all: true })
+      : await lookup(hostname, { all: true });
     timeout.throwIfAborted();
     if (!addresses.length || addresses.some((entry) => !isPublicAddress(entry.address))) {
       throw new AppError(400, "此網址解析到非公開網路，無法讀取。");
@@ -87,22 +124,11 @@ async function fetchPublicResource(
     const dispatcher = new Agent({
       connect: {
         timeout: 7000,
-        lookup: (_host, options, callback) => {
-          const matching = options.family
-            ? addresses.filter((item) => item.family === options.family)
-            : addresses;
-          const selected = matching[0];
-          if (!selected) {
-            callback(new Error("No public address"), "", 4);
-            return;
-          }
-          if (options.all) callback(null, matching);
-          else callback(null, selected.address, selected.family);
-        },
+        lookup: createPinnedLookup(addresses),
       },
     });
     try {
-      const response = await safeFetch(url, {
+      const response = await doFetch(url, {
         dispatcher,
         signal: timeout,
         redirect: "manual",
@@ -132,9 +158,11 @@ async function fetchPublicResource(
         await response.body?.cancel();
         throw new AppError(422, opts.invalidTypeError);
       }
-      if (Number(response.headers.get("content-length") || 0) > opts.maxBytes) {
+      const maxBytes = typeof opts.maxBytes === "function" ? opts.maxBytes(contentType, url) : opts.maxBytes;
+      const sizeError = typeof opts.sizeError === "function" ? opts.sizeError(maxBytes) : opts.sizeError;
+      if (Number(response.headers.get("content-length") || 0) > maxBytes) {
         await response.body?.cancel();
-        throw new AppError(413, opts.sizeError);
+        throw new AppError(413, sizeError);
       }
       const reader = response.body?.getReader();
       if (!reader) throw new AppError(422, "無法讀取遠端內容。");
@@ -144,9 +172,9 @@ async function fetchPublicResource(
         const { done, value } = await reader.read();
         if (done) break;
         total += value.byteLength;
-        if (total > opts.maxBytes) {
+        if (total > maxBytes) {
           await reader.cancel();
-          throw new AppError(413, opts.sizeError);
+          throw new AppError(413, sizeError);
         }
         chunks.push(value);
       }
@@ -171,6 +199,58 @@ export async function fetchPublicHtml(
     timeoutMs: 12_000,
   });
   return { html: buffer.toString("utf8"), finalUrl, contentType };
+}
+
+export type PublicPageSource =
+  | { kind: "html"; html: string; finalUrl: URL; contentType: string }
+  | { kind: "pdf"; bytes: Buffer; finalUrl: URL; contentType: string };
+
+export function hasPdfMagicHeader(bytes: Buffer): boolean {
+  return bytes.subarray(0, 1024).toString("latin1").includes("%PDF-");
+}
+
+function isPdfMimeOrUrl(contentType: string, url: URL): boolean {
+  if (/^application\/pdf\b/i.test(contentType)) return true;
+  return /^application\/octet-stream\b/i.test(contentType) && url.pathname.toLowerCase().endsWith(".pdf");
+}
+
+export async function fetchPublicPageSource(
+  input: string,
+  signal: AbortSignal,
+  deps?: PublicFetchDeps,
+): Promise<PublicPageSource> {
+  const { buffer, finalUrl, contentType } = await fetchPublicResource(
+    input,
+    signal,
+    {
+      accept: "text/html,text/plain,text/markdown;q=0.9,application/xhtml+xml;q=0.9,application/pdf;q=0.9",
+      contentTypePattern: /text\/|application\/(xhtml\+xml|xml|json|pdf|octet-stream)/i,
+      invalidTypeError: "此網址不是可閱讀的文字網頁或 PDF 文件，請直接貼上內容。",
+      maxBytes: (ct, u) => (isPdfMimeOrUrl(ct, u) ? MAX_PDF_BYTES : MAX_BYTES),
+      sizeError: (max) =>
+        max >= MAX_PDF_BYTES
+          ? "PDF 檔案超過 15 MB 上限，無法擷取。"
+          : "網頁超過 1.5 MB 上限，請直接貼上想讀的段落。",
+      timeoutMs: 18_000,
+    },
+    deps,
+  );
+
+  if (isPdfMimeOrUrl(contentType, finalUrl)) {
+    if (!hasPdfMagicHeader(buffer)) {
+      throw new AppError(422, "遠端檔案不是有效的 PDF 格式（缺少 %PDF- 檔頭）。");
+    }
+    return { kind: "pdf", bytes: buffer, finalUrl, contentType };
+  }
+
+  if (/^application\/octet-stream\b/i.test(contentType)) {
+    if (hasPdfMagicHeader(buffer)) {
+      return { kind: "pdf", bytes: buffer, finalUrl, contentType };
+    }
+    throw new AppError(422, "此網址回傳二進位檔案，非可閱讀網頁或 PDF。");
+  }
+
+  return { kind: "html", html: buffer.toString("utf8"), finalUrl, contentType };
 }
 
 export interface FetchedImage {
@@ -545,4 +625,210 @@ export function resolveQuoteAnchor(
     }
   }
   return undefined;
+}
+
+function unescapePdfLiteral(raw: string): string {
+  return raw
+    .replace(/\\([nrtbf()\\])/g, (_, ch: string) => {
+      if (ch === "n") return "\n";
+      if (ch === "r") return "\r";
+      if (ch === "t") return "\t";
+      if (ch === "b") return "\b";
+      if (ch === "f") return "\f";
+      return ch;
+    })
+    .replace(/\\([0-7]{1,3})/g, (_, oct: string) => String.fromCharCode(parseInt(oct, 8)));
+}
+
+function extractPdfOperators(content: string): string {
+  const parts: string[] = [];
+  const tjRe = /\(((?:\\.|[^\\)])*)\)\s*Tj/g;
+  const arrRe = /\[((?:[^[\]]|\((?:\\.|[^\\)])*\))*)\]\s*TJ/g;
+  const tokens: Array<{ idx: number; text: string }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = tjRe.exec(content))) {
+    tokens.push({ idx: m.index, text: unescapePdfLiteral(m[1]) });
+  }
+  while ((m = arrRe.exec(content))) {
+    const inner = m[1];
+    let str = "";
+    const litRe = /\(((?:\\.|[^\\)])*)\)/g;
+    let lm: RegExpExecArray | null;
+    while ((lm = litRe.exec(inner))) {
+      str += unescapePdfLiteral(lm[1]);
+    }
+    if (str) tokens.push({ idx: m.index, text: str });
+  }
+  tokens.sort((a, b) => a.idx - b.idx);
+  for (const tok of tokens) {
+    parts.push(tok.text);
+  }
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function extractPdfTextFallbackJs(bytes: Buffer): { pages: string[]; pageCount: number } {
+  const latin = bytes.toString("latin1");
+  const pageMatches = latin.match(/\/Type\s*\/Page\b/g);
+  const pageCount = Math.max(1, pageMatches ? pageMatches.length : 1);
+  const extracted: string[] = [];
+  const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match: RegExpExecArray | null;
+  while ((match = streamRe.exec(latin))) {
+    const rawChunk = Buffer.from(match[1], "latin1");
+    let textStream = match[1];
+    try {
+      textStream = inflateSync(rawChunk, { maxOutputLength: MAX_PDF_BYTES * 2 }).toString("latin1");
+    } catch {
+      // Uncompressed or different filter; inspect rawChunk directly
+    }
+    const opText = extractPdfOperators(textStream);
+    if (opText) extracted.push(opText);
+  }
+  if (!extracted.length) {
+    const directOps = extractPdfOperators(latin);
+    if (directOps) extracted.push(directOps);
+  }
+  return { pages: extracted.length ? [extracted.join("\n\n")] : [], pageCount };
+}
+
+async function runGhostscriptTxtWrite(bytes: Buffer): Promise<{ pages: string[]; pageCount: number } | null> {
+  const dir = await mkdtemp(join(tmpdir(), "bell-reader-pdf-"));
+  const pdfPath = join(dir, "input.pdf");
+  try {
+    await writeFile(pdfPath, bytes);
+    const gsBin = process.env.GS_BIN || "/usr/bin/gs";
+    const result = await new Promise<{ code: number | null; stderr: string; error?: Error }>((resolve) => {
+      const child = spawn(
+        gsBin,
+        ["-q", "-dNOPAUSE", "-dBATCH", "-dSAFER", "-sDEVICE=txtwrite", "-dTextFormat=3", `-o${dir}/p-%04d.txt`, pdfPath],
+        { stdio: ["ignore", "ignore", "pipe"] },
+      );
+      let stderr = "";
+      const timer = setTimeout(() => child.kill("SIGTERM"), 15_000);
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk: string) => {
+        if (stderr.length < 4000) stderr += chunk;
+      });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        resolve({ code: null, stderr, error: err });
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ code, stderr });
+      });
+    });
+
+    if (/requires a password|password/i.test(result.stderr)) {
+      throw new AppError(422, "此 PDF 受密碼保護，請先解除加密後再上傳。");
+    }
+    if (result.error || result.code !== 0) {
+      return null;
+    }
+
+    const files = (await readdir(dir)).filter((f) => /^p-\d+\.txt$/.test(f)).sort();
+    if (!files.length) return null;
+    const pages: string[] = [];
+    for (const file of files) {
+      pages.push(await readFile(join(dir, file), "utf8"));
+    }
+    return { pages, pageCount: files.length };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+export async function extractBlocksFromPdf(
+  bytes: Buffer,
+  filenameOrTitle = "PDF 文件",
+): Promise<ExtractedPage & { pageCount: number }> {
+  if (!hasPdfMagicHeader(bytes)) {
+    throw new AppError(422, "檔案不是有效的 PDF 格式（缺少 %PDF- 檔頭）。");
+  }
+  if (bytes.byteLength > MAX_PDF_BYTES) {
+    throw new AppError(413, "PDF 檔案超過 15 MB 上限。");
+  }
+
+  // shortcut: gs txtwrite interleaves multi-column PDFs and omits native /Outlines; upgrade to pdfjs-dist if needed
+  const gsResult = await runGhostscriptTxtWrite(bytes);
+  const rawResult = gsResult ?? extractPdfTextFallbackJs(bytes);
+  const pageCount = Math.max(1, rawResult.pageCount);
+
+  const blocks: ReaderBlock[] = [];
+  const pushBlock = (block: Omit<ReaderBlock, "id">) => {
+    if (blocks.length >= MAX_BLOCKS || !block.text.trim()) return;
+    blocks.push({ id: `b${blocks.length + 1}`, ...block, text: block.text.slice(0, MAX_BLOCK_CHARS) });
+  };
+
+  for (let pIdx = 0; pIdx < rawResult.pages.length && blocks.length < MAX_BLOCKS; pIdx++) {
+    const normalized = rawResult.pages[pIdx]
+      .normalize("NFKC")
+      .replace(/\r\n?/g, "\n")
+      .replace(/^\s*[—-]\s*\d+\s*[—-]\s*$/gm, "")
+      .trim();
+    if (!normalized) continue;
+
+    if (pageCount > 1) {
+      pushBlock({ kind: "heading", level: 2, text: `第 ${pIdx + 1} 頁` });
+    }
+
+    const chunks = normalized.split(/\n{2,}/);
+    for (const chunk of chunks) {
+      if (blocks.length >= MAX_BLOCKS) break;
+      const lines = chunk
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      if (!lines.length) continue;
+
+      const joined = lines.join(" ").replace(/\s+/g, " ").trim();
+      if (!joined || /^\d{1,4}$/.test(joined)) continue;
+
+      if (
+        lines.length === 1 &&
+        joined.length <= 72 &&
+        (/^(?:\d+(?:\.\d+)*\s+\S+|第\s*[一二三四五六七八九十\d]+\s*[章節講課篇])/.test(joined) ||
+          (joined.length <= 42 && !/[。！？.;]$/.test(joined) && !joined.includes("://")))
+      ) {
+        pushBlock({ kind: "heading", level: 3, text: joined });
+        continue;
+      }
+
+      if (lines.every((l) => /^(?:[-*•·]|\d+[.)])\s+/.test(l))) {
+        for (const item of lines) {
+          pushBlock({ kind: "list", text: item.replace(/^(?:[-*•·]|\d+[.)])\s+/, "").trim() });
+        }
+        continue;
+      }
+
+      if (lines.length >= 2 && lines.some((l) => /[{}();]/.test(l)) && lines.filter((l) => /;\s*$/.test(l)).length >= 1) {
+        pushBlock({ kind: "code", text: lines.join("\n") });
+        continue;
+      }
+
+      pushBlock({ kind: "paragraph", text: joined });
+    }
+  }
+
+  if (blocks.length === 0) {
+    pushBlock({
+      kind: "paragraph",
+      text: "此 PDF 頁面僅含影像或掃描圖層，未擷取到可選取文字；請直接使用左側 PDF 原檔並排閱讀，並在右側記錄筆記。",
+    });
+  }
+
+  const cleanFileTitle = filenameOrTitle.replace(/\.pdf$/i, "").trim();
+  const firstHeading = blocks.find((b) => b.kind === "heading" && !/^第 \d+ 頁$/.test(b.text));
+  const title = (cleanFileTitle && cleanFileTitle !== "document"
+    ? cleanFileTitle
+    : firstHeading?.text || blocks[0].text.slice(0, 48)
+  ).slice(0, 120);
+  const firstProse = blocks.find((b) => b.kind === "paragraph" || b.kind === "list") ?? blocks[0];
+  return {
+    title,
+    siteName: "PDF 文件",
+    excerpt: firstProse.text.slice(0, 160),
+    blocks,
+    pageCount,
+  };
 }

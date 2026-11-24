@@ -31,6 +31,30 @@ export async function apiWrite<T>(
   return body as T;
 }
 
+export async function apiUploadPdf<T>(
+  file: File,
+  opts: { title?: string; folderId?: string | null } = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    "content-type": "application/pdf",
+    accept: "application/json",
+    "x-bell-filename": encodeURIComponent(file.name || "document.pdf"),
+  };
+  if (opts.title?.trim()) headers["x-bell-title"] = encodeURIComponent(opts.title.trim());
+  if (opts.folderId) headers["x-bell-folder-id"] = opts.folderId;
+
+  const res = await fetch("/api/pages/pdf", {
+    method: "POST",
+    headers,
+    body: file,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(typeof body?.error === "string" ? body.error : `PDF 上傳失敗（${res.status}）`);
+  }
+  return body as T;
+}
+
 export async function apiAnnotateStream<T>(
   pageId: string,
   onStage: (message: string) => void,

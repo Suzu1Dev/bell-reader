@@ -9,6 +9,7 @@ const store = new ReaderStore(dbPath);
 
 const app = createApp({
   store,
+  dataDir: config.dataDir,
   allowedOrigins: config.allowedOrigins,
   suiteLinks: config.suiteLinks,
   suiteFetch: config.suiteFetch,
