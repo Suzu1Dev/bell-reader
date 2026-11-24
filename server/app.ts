@@ -938,6 +938,7 @@ export function createApp(options: CreateAppOptions) {
         title: generated.title,
         summary: generated.summary,
         payload: generated.payload,
+        resetState: true,
         source: generated.source,
       });
       res.json({ block: updated, page: store.getPage(page.id)! });
@@ -956,8 +957,13 @@ export function createApp(options: CreateAppOptions) {
     if (!block || block.kind !== "simulation" || !block.payload.html) {
       throw new AppError(404, "找不到此互動模擬畫面。");
     }
+    const rawToken = typeof req.query.frameToken === "string" ? req.query.frameToken.trim() : "";
+    const frameToken = /^[A-Za-z0-9_-]{1,64}$/.test(rawToken) ? rawToken : undefined;
     const nonce = randomBytes(16).toString("base64url");
-    const html = wrapSimulationDocument(block.payload.html, block.title, nonce);
+    const html = wrapSimulationDocument(block.payload.html, block.title, nonce, {
+      blockId: block.id,
+      frameToken,
+    });
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader(
       "Content-Security-Policy",
@@ -989,7 +995,7 @@ export function createApp(options: CreateAppOptions) {
   if (existsSync(distDir)) {
     app.use(express.static(distDir));
     app.get("/{*path}", (_req, res) => {
-      res.sendFile(resolve(distDir, "index.html"));
+      res.sendFile(resolve(distDir, "index.html"), { dotfiles: "allow" });
     });
   }
 

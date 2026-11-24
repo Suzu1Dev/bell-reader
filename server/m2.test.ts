@@ -1,18 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { Response as UndiciResponse } from "undici";
 import { createApp } from "./app.js";
 import { AppError } from "./errors.js";
-import { createPinnedLookup, extractBlocksFromPdf, fetchPublicPageSource, validatePublicUrl } from "./extractor.js";
+import { createPinnedLookup, extractBlocksFromPdf, fetchPublicPageSource, parsePastedContent, validatePublicUrl } from "./extractor.js";
 import {
   buildDeterministicSimulation,
   buildDeterministicStepper,
   extractPassageSignals,
+  generateInteractiveBlock,
   sanitizeSimulationHtml,
+  wrapSimulationDocument,
 } from "./interactive.js";
 import { ReaderStore } from "./store.js";
 import { SUITE_LIMITS } from "../shared/suite.js";
@@ -82,7 +84,7 @@ function decodeSimPayload(html: string): string {
   return Buffer.from(m[1], "base64").toString("utf8");
 }
 
-test("Deterministic interactive blocks are passage-driven and sanitizer blocks unsafe HTML/APIs", () => {
+test("Deterministic interactive blocks are passage-driven and sanitizer blocks unsafe HTML/APIs", async () => {
   const numSim = buildDeterministicSimulation({
     block: {
       id: "b1",
@@ -135,6 +137,42 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
   for (const chk of stepper.checks) {
     assert.ok(chk.correctIndex >= 0 && chk.correctIndex < chk.options.length);
   }
+
+  // Topbar PDF block generation skips bare "第 1 頁" heading and avoids duplicate context or mid-word truncation
+  const shortSig = extractPassageSignals(
+    { id: "h-short", kind: "heading", text: "Intro" },
+    undefined,
+    [{ id: "p-ctx", kind: "paragraph", text: "Frame budget is strictly bounded to 16.6ms at 60Hz display refresh." }],
+  );
+  assert.ok(shortSig.sentences[0]?.includes("16.6ms"));
+
+  const multiPage = await generateInteractiveBlock({
+    page: {
+      id: "pdf-p1",
+      sourceKind: "pdf",
+      title: "Event Loop",
+      excerpt: "Event Loop",
+      topic: "Tech",
+      tags: [],
+      folderId: null,
+      annotationCount: 0,
+      annotations: [],
+      createdAt: "2026-11-24T00:00:00.000Z",
+      updatedAt: "2026-11-24T00:00:00.000Z",
+      blocks: [
+        { id: "b1", kind: "heading", level: 2, text: "第 1 頁" },
+        { id: "b2", kind: "paragraph", text: "Event Loop schedules microtasks before rendering each animation frame cleanly." },
+      ],
+    },
+    afterBlockId: null,
+    kind: "simulation",
+    mode: "instant",
+    settings: { provider: "api", model: "gpt-4o-mini", autoFolder: false },
+    signal: new AbortController().signal,
+  });
+  const multiHtml = (multiPage.payload as { html: string }).html;
+  assert.ok(!decodeSimPayload(multiHtml).includes("第 1 頁 第 1 頁"));
+  assert.ok(decodeSimPayload(multiHtml).includes("Event Loop schedules microtasks"));
 
   for (const unsafe of [
     '<iframe src="/x"></iframe>',
@@ -521,6 +559,63 @@ test("Deterministic interactive blocks are passage-driven and sanitizer blocks u
     const s = buildDeterministicSimulation({ block: b, pageTitle: "Web APIs" });
     assert.doesNotThrow(() => sanitizeSimulationHtml(s.html), `template for ${b.id} must pass sanitizer`);
   }
+
+  // Adversarial boundary: 200 KB single-line blocks & huge tables clip cleanly in extractPassageSignals and pass sanitizeSimulationHtml
+  const hugeMdHeader = Array.from({ length: 10 }, (_, c) => `H${c}_${"h".repeat(2195)}`).join(" | ");
+  const hugeMdSep = Array.from({ length: 10 }, () => "---").join(" | ");
+  const hugeMdRows = Array.from(
+    { length: 5 },
+    (_, r) => `| ${Array.from({ length: 10 }, (_, c) => `R${r}C${c}_${"t".repeat(2195)}`).join(" | ")} |`,
+  );
+  const parsedHugeTable = parsePastedContent(
+    [`| ${hugeMdHeader} |`, `| ${hugeMdSep} |`, ...hugeMdRows].join("\n"),
+    "Huge Table",
+  ).blocks.find((b) => b.kind === "table");
+  assert.ok(parsedHugeTable && parsedHugeTable.tableRows?.length === 6 && parsedHugeTable.tableRows[0].length === 10);
+  const hugeTableText = Array.from(
+    { length: 7 },
+    (_, r) => Array.from({ length: 10 }, (_, c) => `T${r}C${c}_${"v".repeat(2195)}`).join(" | "),
+  ).join("\n");
+
+  for (const hugeBlock of [
+    { id: "huge-num", kind: "paragraph" as const, text: "延遲 16.6 ms ".repeat(20000) },
+    { id: "huge-code", kind: "code" as const, text: "const frameBudget = 16; ".repeat(10000) },
+    { id: "huge-flow", kind: "paragraph" as const, text: `StageA ${"x".repeat(5000)} -> StageB ${"y".repeat(200000)}` },
+    parsedHugeTable,
+    { id: "huge-table-text", kind: "table" as const, text: hugeTableText },
+  ]) {
+    const sig = extractPassageSignals(hugeBlock, undefined);
+    assert.ok(sig.sentences.every((s) => s.length <= 240));
+    assert.ok(sig.codeLines.every((l) => l.length <= 240));
+    assert.ok(sig.steps.every((s) => s.length <= 64));
+    assert.ok(sig.tableRows.length <= 6);
+    assert.ok(sig.tableRows.every((r) => r.length <= 8 && r.every((c) => c.length <= 80)));
+    if (hugeBlock.kind === "table") assert.equal(sig.tableRows.length, 6);
+    const sim = buildDeterministicSimulation({ block: hugeBlock, pageTitle: "Huge Block" });
+    const clean = sanitizeSimulationHtml(sim.html);
+    assert.ok(clean.length <= 60_000, `expected sanitized huge simulation <= 60000 chars, got ${clean.length}`);
+  }
+});
+
+test("wrapSimulationDocument appends nonced bounded postMessage resize script and strips invalid frameToken", () => {
+  const safeHtml = '<div class="sim-wrap"><p>Hello</p></div>';
+  const withToken = wrapSimulationDocument(safeHtml, "Demo", "nonce-abc", {
+    blockId: "b1",
+    frameToken: "tok_safe-1",
+  });
+  assert.ok(withToken.includes('nonce="nonce-abc"'));
+  assert.ok(withToken.includes('"bell-reader-sim-height"'));
+  assert.ok(withToken.includes('"b1"'));
+  assert.ok(withToken.includes('"tok_safe-1"'));
+  assert.ok(withToken.includes("Math.max(160, Math.min(720"));
+  assert.ok(!/html,\s*body\s*\{[^}]*min-height:\s*100%/i.test(withToken));
+
+  const unsafeToken = wrapSimulationDocument(safeHtml, "Demo", "nonce-abc", {
+    blockId: "</script><x>",
+    frameToken: "</script><script>alert(1)",
+  });
+  assert.ok(!unsafeToken.includes("alert(1)"));
+  assert.ok(!unsafeToken.includes("bell-reader-sim-height"));
 });
 
 test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PATCH, refetch, and Suite Today", async () => {
@@ -723,7 +818,9 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
     const simBody = (await simCreate.json()) as { block: { id: string; source: string } };
     assert.equal(simBody.block.source, "deterministic");
 
-    const frameRes = await fetch(`${srv.url}/api/pages/${page.id}/interactive-blocks/${simBody.block.id}/frame?theme=dark`);
+    const frameRes = await fetch(
+      `${srv.url}/api/pages/${page.id}/interactive-blocks/${simBody.block.id}/frame?theme=dark&frameToken=tok_1`,
+    );
     assert.equal(frameRes.status, 200);
     assert.match(frameRes.headers.get("content-type") || "", /text\/html/);
     assert.equal(frameRes.headers.get("x-frame-options"), "SAMEORIGIN");
@@ -738,11 +835,23 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
     assert.ok(frameCsp.includes("sandbox allow-scripts"));
     const frameHtml = await frameRes.text();
     const scriptTags = frameHtml.match(/<script\b[^>]*>/gi) ?? [];
-    assert.ok(scriptTags.length >= 2, "expected theme script and simulation script tags");
+    assert.ok(scriptTags.length >= 3, "expected theme, simulation, and resize script tags");
     for (const tag of scriptTags) {
       assert.ok(tag.includes(`nonce="${nonceMatch[1]}"`), `expected matching nonce on script tag: ${tag}`);
     }
+    assert.ok(frameHtml.includes('"bell-reader-sim-height"'));
+    assert.ok(frameHtml.includes('"tok_1"'));
+    assert.ok(frameHtml.includes(JSON.stringify(simBody.block.id)));
     assert.ok(decodeSimPayload(frameHtml).includes("16.6"));
+
+    // Malformed frameToken query parameter is stripped cleanly without breaking CSP/nonce
+    const badTokenRes = await fetch(
+      `${srv.url}/api/pages/${page.id}/interactive-blocks/${simBody.block.id}/frame?frameToken=${encodeURIComponent("</script><script>alert(1)")}`,
+    );
+    assert.equal(badTokenRes.status, 200);
+    const badTokenHtml = await badTokenRes.text();
+    assert.ok(!badTokenHtml.includes("alert(1)"));
+    assert.ok(!badTokenHtml.includes("bell-reader-sim-height"));
 
     // Interactive stepper + upgrade + state persistence + delete
     const stepCreate = await fetch(`${srv.url}/api/pages/${page.id}/interactive-blocks`, {
@@ -769,9 +878,10 @@ test("M2 API: PDF upload/URL/serving, interactive blocks CRUD/CSP, annotation PA
       body: JSON.stringify({}),
     });
     assert.equal(upgradeRes.status, 200);
-    const upgraded = (await upgradeRes.json()) as { block: { source: string; title: string } };
+    const upgraded = (await upgradeRes.json()) as { block: { source: string; title: string; state?: Record<string, unknown> } };
     assert.equal(upgraded.block.source, "ai");
     assert.equal(upgraded.block.title, "AI 深化：微任務排程");
+    assert.deepEqual(upgraded.block.state, {});
 
     // Refetch preserves id, interactiveBlocks, and re-anchors annotations
     refetchVersion = 2;
@@ -1007,4 +1117,58 @@ test("Extractor SSRF protection: trailing-dot local hostnames, pinned DNS lookup
       }),
     (err: unknown) => err instanceof AppError && err.status === 422,
   );
+});
+
+test("Dot-directory dataDir and distDir serve PDFs and SPA fallback safely while blocking traversal and .env", async () => {
+  const tmpRoot = mkdtempSync(join(tmpdir(), "bell-reader-dotdir-"));
+  const dotDataDir = join(tmpRoot, ".local", "share", "bell-reader");
+  const dotDistDir = join(tmpRoot, ".gemini", "dist");
+  mkdirSync(join(dotDistDir, "assets"), { recursive: true });
+  writeFileSync(join(dotDistDir, "index.html"), "<!doctype html><html><body>BELL SPA</body></html>");
+  writeFileSync(join(dotDistDir, "assets", "app.js"), "window.__APP__ = true;");
+  writeFileSync(join(dotDistDir, ".env"), "TOP_SECRET_KEY=super-secret");
+
+  const store = new ReaderStore(":memory:");
+  const app = createApp({ store, dataDir: dotDataDir, distDir: dotDistDir });
+  const srv = await listenLocal(app);
+  try {
+    const samplePdf = makeMinimalPdf("BT /F1 12 Tf 72 720 Td (Dotdir PDF test) Tj ET");
+    const uploadRes = await fetch(`${srv.url}/api/pages/pdf`, {
+      method: "POST",
+      headers: { "content-type": "application/pdf", "x-bell-filename": "dotdir.pdf" },
+      body: new Uint8Array(samplePdf),
+    });
+    assert.equal(uploadRes.status, 201);
+    const { page } = (await uploadRes.json()) as { page: { id: string } };
+
+    const pdfRes = await fetch(`${srv.url}/api/pages/${page.id}/pdf`);
+    assert.equal(pdfRes.status, 200);
+    assert.equal(pdfRes.headers.get("content-type"), "application/pdf");
+    assert.deepEqual(Buffer.from(await pdfRes.arrayBuffer()), samplePdf);
+
+    for (const badId of ["..%2F..%2Fetc%2Fpasswd", ".hidden"]) {
+      const badRes = await fetch(`${srv.url}/api/pages/${badId}/pdf`);
+      assert.equal(badRes.status, 404, `expected 404 for ${badId}`);
+    }
+
+    const rootRes = await fetch(`${srv.url}/`);
+    assert.equal(rootRes.status, 200);
+    assert.ok((await rootRes.text()).includes("BELL SPA"));
+
+    const assetRes = await fetch(`${srv.url}/assets/app.js`);
+    assert.equal(assetRes.status, 200);
+    assert.ok((await assetRes.text()).includes("window.__APP__"));
+
+    const spaRes = await fetch(`${srv.url}/page/demo`);
+    assert.equal(spaRes.status, 200);
+    assert.ok((await spaRes.text()).includes("BELL SPA"));
+
+    const envRes = await fetch(`${srv.url}/.env`);
+    const envText = await envRes.text();
+    assert.ok(!envText.includes("TOP_SECRET_KEY"), "dotfile inside distDir must never leak");
+  } finally {
+    await srv.close();
+    store.close();
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
 });

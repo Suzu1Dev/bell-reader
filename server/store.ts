@@ -838,13 +838,18 @@ export class ReaderStore {
       summary?: string;
       payload?: InteractivePayload;
       state?: Record<string, unknown>;
+      resetState?: boolean;
       source?: "ai" | "deterministic";
     },
   ): InteractiveBlock {
     const current = this.getInteractiveBlock(pageId, blockId);
     if (!current) throw new AppError(404, "找不到此互動區塊。");
     const now = new Date().toISOString();
-    const nextState = patch.state ? { ...(current.state ?? {}), ...patch.state } : current.state;
+    const nextState = patch.resetState
+      ? {}
+      : patch.state
+        ? { ...(current.state ?? {}), ...patch.state }
+        : current.state;
     this.db
       .prepare(`
         UPDATE interactive_blocks

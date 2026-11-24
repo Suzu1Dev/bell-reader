@@ -1269,14 +1269,52 @@ export function sanitizeSimulationHtml(rawHtml: string): string {
   return clean;
 }
 
-export function wrapSimulationDocument(sanitizedHtml: string, title: string, nonce?: string): string {
+export function wrapSimulationDocument(
+  sanitizedHtml: string,
+  title: string,
+  nonce?: string,
+  meta?: { blockId?: string; frameToken?: string },
+): string {
   const clean = sanitizeSimulationHtml(sanitizedHtml);
   const scriptNonce = nonce ?? randomBytes(16).toString("base64url");
+  const rawToken = typeof meta?.frameToken === "string" ? meta.frameToken.trim() : "";
+  const safeFrameToken = /^[A-Za-z0-9_-]{1,64}$/.test(rawToken) ? rawToken : "";
+  const rawBlockId = typeof meta?.blockId === "string" ? meta.blockId.trim() : "";
+  const safeBlockId = /^[A-Za-z0-9._:-]{1,128}$/.test(rawBlockId) ? rawBlockId : "";
   const $ = cheerio.load(clean, null, false);
   $("script").each((_idx, el) => {
     $(el).attr("nonce", scriptNonce);
   });
   const noncedBody = $.html();
+  const resizeScript = safeFrameToken
+    ? `\n<script nonce="${escapeHtml(scriptNonce)}">
+  (function () {
+    var lastH = 0;
+    var blockId = ${JSON.stringify(safeBlockId)};
+    var frameToken = ${JSON.stringify(safeFrameToken)};
+    function reportHeight() {
+      if (!document.body) return;
+      var rectH = document.body.getBoundingClientRect().height || 0;
+      var scrollH = document.body.scrollHeight || 0;
+      var h = Math.max(160, Math.min(720, Math.ceil(Math.max(rectH, scrollH))));
+      if (Math.abs(h - lastH) < 2) return;
+      lastH = h;
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(
+          { type: "bell-reader-sim-height", blockId: blockId, frameToken: frameToken, height: h },
+          "*"
+        );
+      }
+    }
+    if (typeof ResizeObserver === "function" && document.body) {
+      new ResizeObserver(reportHeight).observe(document.body);
+    }
+    window.addEventListener("load", reportHeight);
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(reportHeight);
+    setTimeout(reportHeight, 60);
+  })();
+</script>`
+    : "";
   return `<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -1399,9 +1437,17 @@ export function wrapSimulationDocument(sanitizedHtml: string, title: string, non
 </script>
 </head>
 <body>
-${noncedBody}
+${noncedBody}${resizeScript}
 </body>
 </html>`;
+}
+
+function clipClean(text: string, max: number): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return clean;
+  const cut = clean.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space >= Math.floor(max * 0.5) ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
 export function extractPassageSignals(
@@ -1415,6 +1461,7 @@ export function extractPassageSignals(
     .filter(Boolean)
     .join("\n");
   const sourceText = [primaryText, contextText].filter(Boolean).join("\n") || "核心概念解析";
+  const signalText = primaryText.trim().length >= 24 ? primaryText : sourceText;
 
   const numbers: PassageNumberSignal[] = [];
   const seenNum = new Set<string>();
@@ -1427,7 +1474,7 @@ export function extractPassageSignals(
   const numRe =
     /([A-Za-z\u4e00-\u9fff_]{1,14})?\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*(ms|us|ns|s|fps|Hz|kHz|MHz|GHz|KB|MB|GB|%|px|deg|rad|位元|毫秒|秒|幀|次)?/g;
   let nm: RegExpExecArray | null;
-  const numSource = (primaryText || sourceText).replace(
+  const numSource = signalText.replace(
     /第\s*\d+\s*[頁章節篇講課條項]|\b(?:Page|Section|Chapter|Part|Fig\.?)\s+\d+\b|\b(?:if|while|for|switch)\s*\(+\s*-?\d+(?:\.\d+)?\s*\)+/gi,
     " ",
   );
@@ -1460,18 +1507,21 @@ export function extractPassageSignals(
     block?.kind === "code"
       ? block.text
           .split("\n")
-          .map((l) => l.trimEnd())
+          .map((l) => l.trimEnd().slice(0, 240))
           .filter((l) => l.trim().length > 0)
           .slice(0, 8)
       : [];
 
   const tableRows =
     block?.kind === "table" && block.tableRows?.length
-      ? block.tableRows.slice(0, 6)
+      ? block.tableRows
+          .map((r) => r.slice(0, 8).map((c) => clipClean(c, 80)))
+          .filter((r) => r.some(Boolean))
+          .slice(0, 6)
       : block?.kind === "table"
         ? block.text
             .split("\n")
-            .map((r) => r.split(" | ").map((c) => c.trim()))
+            .map((r) => r.split(" | ").slice(0, 8).map((c) => clipClean(c, 80)))
             .filter((r) => r.some(Boolean))
             .slice(0, 6)
         : [];
@@ -1479,29 +1529,35 @@ export function extractPassageSignals(
   const steps: string[] = [];
   if (/(?:->|→)/.test(primaryText)) {
     for (const part of primaryText.split(/\s*(?:->|→)\s*/)) {
-      const s = part.trim();
-      if (s.length >= 2 && s.length <= 64) steps.push(s);
+      const s = clipClean(part, 64);
+      if (s.length >= 2 && !steps.includes(s)) {
+        steps.push(s);
+        if (steps.length >= 6) break;
+      }
     }
   }
   if (steps.length < 2) {
     for (const b of [block, ...surroundingBlocks]) {
       if (b?.kind === "list") {
-        const s = b.text.trim().slice(0, 60);
-        if (s && !steps.includes(s)) steps.push(s);
+        const s = clipClean(b.text, 64);
+        if (s && !steps.includes(s)) {
+          steps.push(s);
+          if (steps.length >= 6) break;
+        }
       }
     }
   }
 
-  const sentences = (primaryText || sourceText)
+  const sentences = signalText
     .split(/(?<=[。！？；!?\n])|(?<=[^0-9.]\.)(?=\s|$)/)
-    .map((s) => s.replace(/\s+/g, " ").trim())
+    .map((s) => clipClean(s, 240))
     .filter((s) => s.length >= 8)
     .slice(0, 6);
 
   const termMatches = [
-    ...(primaryText || sourceText).matchAll(/\b([A-Za-z][A-Za-z0-9_.-]{2,24})\b/g),
+    ...signalText.matchAll(/\b([A-Za-z][A-Za-z0-9_.-]{2,24})\b/g),
   ].map((m) => m[1]);
-  const cjkMatches = [...(primaryText || sourceText).matchAll(/([\u4e00-\u9fff]{2,6})/g)].map((m) => m[1]);
+  const cjkMatches = [...signalText.matchAll(/([\u4e00-\u9fff]{2,6})/g)].map((m) => m[1]);
   const stopWords = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "function", "return", "const"]);
   const terms: string[] = [];
   for (const tok of [...termMatches, ...cjkMatches]) {
@@ -1763,7 +1819,7 @@ export function buildDeterministicSimulation(opts: {
       : sig.terms.length >= 2
         ? sig.terms.slice(0, 4)
         : ["輸入條件", "核心機制", "輸出結果"];
-  const notes = sig.sentences.length ? sig.sentences : [sig.sourceText.slice(0, 120)];
+  const notes = sig.sentences.length ? sig.sentences : [clipClean(sig.sourceText, 120)];
   const payload = { nodes, notes };
   const html = `
 <div class="sim-wrap" id="sim-root">
@@ -1845,7 +1901,7 @@ export function buildDeterministicStepper(opts: {
         ? sig.codeLines
         : sig.steps.length >= 2
           ? sig.steps
-          : [sig.sourceText.slice(0, 140), `核心關鍵詞：${sig.terms.slice(0, 3).join("、") || opts.pageTitle}`];
+          : [clipClean(sig.sourceText, 140), `核心關鍵詞：${sig.terms.slice(0, 3).join("、") || opts.pageTitle}`];
 
   const steps: InteractiveStep[] = rawUnits.slice(0, 4).map((unit, idx) => {
     const token = sig.terms.find((t) => unit.includes(t)) ?? sig.terms[idx] ?? sig.terms[0];
@@ -1878,7 +1934,7 @@ export function buildDeterministicStepper(opts: {
     const keyTerm = sig.terms[0] || focus.slice(0, 20);
     const alt1 = sig.terms[1] || "忽略前置條件直接跳過";
     const alt2 = sig.terms[2] || "僅適用於靜態離線快取";
-    const snippet = (sig.sentences[0] || sig.sourceText).slice(0, 72);
+    const snippet = clipClean(sig.sentences[0] || sig.sourceText, 72);
     const rawOptions = [
       `核心機制圍繞「${keyTerm}」：${snippet}`,
       `文章主張完全捨棄「${alt1}」而不必量測`,
@@ -1961,12 +2017,19 @@ export async function generateInteractiveBlock(opts: {
   source: "ai" | "deterministic";
 }> {
   const { page, afterBlockId, quote, kind, prompt, mode = "instant", settings, signal, runner = defaultJsonRunner } = opts;
-  const blockIdx = afterBlockId ? page.blocks.findIndex((b) => b.id === afterBlockId) : 0;
+  const isBarePageHeading = (b: ReaderBlock | undefined) =>
+    b?.kind === "heading" && /^(?:第\s*\d+\s*頁|Page\s+\d+)$/.test(b.text.trim());
+  let blockIdx = afterBlockId ? page.blocks.findIndex((b) => b.id === afterBlockId) : 0;
+  if (!afterBlockId && isBarePageHeading(page.blocks[0])) {
+    const contentIdx = page.blocks.findIndex((b) => !isBarePageHeading(b));
+    if (contentIdx >= 0) blockIdx = contentIdx;
+  }
   const targetBlock = blockIdx >= 0 ? page.blocks[blockIdx] : page.blocks[0];
-  const surroundingBlocks =
+  const surroundingBlocks = (
     blockIdx >= 0
       ? page.blocks.slice(Math.max(0, blockIdx - 1), Math.min(page.blocks.length, blockIdx + 2))
-      : page.blocks.slice(0, 3);
+      : page.blocks.slice(0, 3)
+  ).filter((b) => b.id !== targetBlock?.id && !isBarePageHeading(b));
 
   if (mode !== "instant") {
     const contextJson = JSON.stringify({

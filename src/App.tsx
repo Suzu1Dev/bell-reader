@@ -6,6 +6,8 @@ import {
   AudioLines,
   CheckSquare,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Columns2,
   Cpu,
   ExternalLink,
@@ -41,12 +43,14 @@ import {
   type ExplainBridgeStatus,
   type Folder,
   type InkColor,
+  type InteractiveBlock,
   type InteractiveBlockKind,
   type ProviderSettings,
   type SavedPage,
   type SavedPageSummary,
 } from "../shared/types";
 import {
+  buildExplainHandoffText,
   explainDraftHref,
   isReaderHandoffAttempt,
   parseReaderHandoff,
@@ -273,6 +277,9 @@ export default function App() {
   const [translating, setTranslating] = useState(false);
   const [translationMode, setTranslationMode] = useState<"original" | "bilingual" | "translated">("original");
   const [pdfViewMode, setPdfViewMode] = useState<"split" | "notes" | "pdf">("split");
+  const [pdfPage, setPdfPage] = useState(1);
+  const [pdfNavKey, setPdfNavKey] = useState(0);
+  const [pdfDarkPaper, setPdfDarkPaper] = useState(false);
   const [splitPct, setSplitPct] = useState<number>(() => {
     const saved = localStorage.getItem("bell.reader.splitPct");
     const raw = saved && saved.trim() ? Number(saved) : NaN;
@@ -663,13 +670,22 @@ export default function App() {
     setInteractiveBusy(true);
     setNotice(null);
     try {
-      const res = await apiWrite<{ page: SavedPage }>(
+      const res = await apiWrite<{ block?: InteractiveBlock; page: SavedPage }>(
         "POST",
         `/api/pages/${encodeURIComponent(activePage.id)}/interactive-blocks`,
         opts,
       );
       setActivePage(res.page);
+      if (res.block?.id) setPdfViewMode((m) => (m === "pdf" ? "split" : m));
       await loadLibrary();
+      if (res.block?.id) {
+        const createdId = res.block.id;
+        requestAnimationFrame(() => {
+          document
+            .querySelector<HTMLElement>(`[data-interactive-id="${CSS.escape(createdId)}"]`)
+            ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        });
+      }
     } catch (err) {
       setNotice({ kind: "error", text: err instanceof Error ? err.message : "無法建立互動區塊。" });
     } finally {
@@ -735,6 +751,37 @@ export default function App() {
   }, [activePage, isTranslatedView]);
 
   const activeHasPdf = Boolean(activePage && (activePage.hasPdf || activePage.sourceKind === "pdf"));
+  useEffect(() => {
+    setPdfPage(1);
+    setPdfNavKey(0);
+  }, [activePage?.id]);
+
+  const jumpToPdfPage = (nextPage: number, syncBlock = true) => {
+    if (!activePage) return;
+    const maxPage = Math.max(1, activePage.pdfPageCount ?? 1);
+    const clamped = Math.max(1, Math.min(maxPage, nextPage));
+    setPdfPage(clamped);
+    setPdfNavKey((k) => k + 1);
+    if (syncBlock) {
+      const target = activePage.blocks.find((b) => b.kind === "heading" && b.text.trim() === `第 ${clamped} 頁`);
+      if (target) setFocusRequest({ kind: "block", id: target.id, nonce: Date.now() });
+    }
+  };
+
+  const createInteractiveFromTopbar = async (kind: InteractiveBlockKind) => {
+    if (!activePage || interactiveBusy) return;
+    const firstContentBlock =
+      activePage.blocks.find((b) => b.kind !== "heading" && b.kind !== "image") ?? activePage.blocks[0];
+    const prompt = interactivePromptDraft.trim();
+    setInteractiveMenuOpen(false);
+    setInteractivePromptDraft("");
+    await handleCreateInteractiveBlock({
+      afterBlockId: firstContentBlock?.id ?? null,
+      quote: firstContentBlock?.text.slice(0, 140),
+      kind,
+      ...(prompt ? { prompt } : {}),
+    });
+  };
   const hasMobileSubbar = Boolean(route.kind === "page" && activePage && (activeHasPdf || activePage.translatedBlocks));
   const outlineHeadings = useMemo(
     () => (activePage ? activePage.blocks.filter((b) => b.kind === "heading") : []),
@@ -795,22 +842,16 @@ export default function App() {
 
   const pageToExplainHref = useMemo(() => {
     if (!activePage) return undefined;
-    const notesDigest = activePage.annotations
-      .slice(0, 4)
-      .map((a) => `• 「${a.quote}」→ ${a.note}`)
-      .join("\n");
-    const payload = [
-      activePage.summary ? `摘要：${activePage.summary}` : activePage.excerpt,
-      notesDigest ? `\n重點標註：\n${notesDigest}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
+    const isPdf = Boolean(activePage.hasPdf || activePage.sourceKind === "pdf");
     return explainDraftHref(
       explainOrigin,
       {
         title: activePage.title,
-        text: payload,
+        text: buildExplainHandoffText(activePage),
         back: `#/page/${activePage.id}`,
+        source: isPdf ? "pdf" : activePage.sourceKind,
+        url: activePage.url,
+        pdf: isPdf ? activePage.title : undefined,
       },
       window.location.hostname,
     );
@@ -893,6 +934,78 @@ export default function App() {
     } else {
       setSidebarCollapsed((v) => !v);
     }
+  };
+
+  const renderPdfPane = (solo: boolean) => {
+    if (!activePage) return null;
+    return (
+      <section
+        className={solo ? "reader-pdf-pane is-solo" : "reader-pdf-pane"}
+        aria-label={solo ? "PDF 原檔檢視" : "PDF 原檔"}
+      >
+        <div className="pdf-pane-bar">
+          <span className="pdf-pane-title">
+            <FileText size={13} aria-hidden="true" />
+            <bdi>{activePage.title}</bdi>
+            {activePage.pdfPageCount ? (
+              <span className="pdf-page-count">{activePage.pdfPageCount} 頁</span>
+            ) : null}
+          </span>
+          <div className="pdf-pane-actions">
+            {(activePage.pdfPageCount ?? 0) > 1 ? (
+              <div className="pdf-page-nav" role="group" aria-label="PDF 頁次導覽">
+                <button
+                  type="button"
+                  className="pdf-bar-btn"
+                  aria-label="上一頁"
+                  disabled={pdfPage <= 1}
+                  onClick={() => jumpToPdfPage(pdfPage - 1)}
+                >
+                  <ChevronLeft size={13} aria-hidden="true" />
+                </button>
+                <span className="pdf-page-indicator">
+                  {pdfPage} / {activePage.pdfPageCount}
+                </span>
+                <button
+                  type="button"
+                  className="pdf-bar-btn"
+                  aria-label="下一頁"
+                  disabled={pdfPage >= (activePage.pdfPageCount ?? 1)}
+                  onClick={() => jumpToPdfPage(pdfPage + 1)}
+                >
+                  <ChevronRight size={13} aria-hidden="true" />
+                </button>
+              </div>
+            ) : null}
+            {theme === "dark" ? (
+              <button
+                type="button"
+                className={`pdf-bar-btn ${pdfDarkPaper ? "is-active" : ""}`}
+                aria-pressed={pdfDarkPaper}
+                onClick={() => setPdfDarkPaper((v) => !v)}
+                title="切換 PDF 暗色紙面反轉，圖表過暗時可切回原色"
+              >
+                <span>暗色紙面</span>
+              </button>
+            ) : null}
+            <a
+              href={`/api/pages/${encodeURIComponent(activePage.id)}/pdf`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="pdf-pane-link"
+            >
+              <span>{solo ? "新分頁開啟" : "新分頁"}</span>
+              <ExternalLink size={12} aria-hidden="true" />
+            </a>
+          </div>
+        </div>
+        <iframe
+          className={`reader-pdf-frame ${theme === "dark" && pdfDarkPaper ? "is-dark-paper" : ""}`}
+          src={`/api/pages/${encodeURIComponent(activePage.id)}/pdf${pdfNavKey > 0 ? `?nav=${pdfNavKey}` : ""}#page=${pdfPage}&view=FitH`}
+          title={`${activePage.title} PDF`}
+        />
+      </section>
+    );
   };
 
   return (
@@ -1078,7 +1191,8 @@ export default function App() {
       </aside>
 
       <main className={`app-main ${hasMobileSubbar ? "has-view-pills" : ""}`}>
-        <header className="main-topbar">
+        <div className="main-sticky-chrome">
+          <header className="main-topbar">
           <div className="main-topbar-left">
             <button
               type="button"
@@ -1231,7 +1345,7 @@ export default function App() {
                       title="為目前文章建立可操作的互動模擬或概念步進測驗"
                     >
                       <Plus size={14} aria-hidden="true" />
-                      <span>互動區塊</span>
+                      <span>{interactiveBusy ? "建立中…" : "互動區塊"}</span>
                     </button>
                     {interactiveMenuOpen ? (
                       <div className="interactive-popover" role="dialog" aria-label="新增互動區塊">
@@ -1241,6 +1355,15 @@ export default function App() {
                           className="interactive-popover-input"
                           value={interactivePromptDraft}
                           onChange={(e) => setInteractivePromptDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              setInteractiveMenuOpen(false);
+                            } else if (e.key === "Enter" && !e.nativeEvent.isComposing && !interactiveBusy) {
+                              e.preventDefault();
+                              void createInteractiveFromTopbar("simulation");
+                            }
+                          }}
                           placeholder="選填想模擬的主題或概念…"
                           aria-label="互動主題提示"
                           maxLength={120}
@@ -1250,20 +1373,7 @@ export default function App() {
                             type="button"
                             className="btn-primary is-compact"
                             disabled={interactiveBusy}
-                            onClick={async () => {
-                              const firstContentBlock =
-                                activePage.blocks.find((b) => b.kind !== "heading" && b.kind !== "image") ??
-                                activePage.blocks[0];
-                              const prompt = interactivePromptDraft.trim();
-                              setInteractiveMenuOpen(false);
-                              setInteractivePromptDraft("");
-                              await handleCreateInteractiveBlock({
-                                afterBlockId: firstContentBlock?.id ?? null,
-                                quote: firstContentBlock?.text.slice(0, 140),
-                                kind: "simulation",
-                                ...(prompt ? { prompt } : {}),
-                              });
-                            }}
+                            onClick={() => void createInteractiveFromTopbar("simulation")}
                           >
                             <Cpu size={13} aria-hidden="true" />
                             <span>互動模擬</span>
@@ -1272,20 +1382,7 @@ export default function App() {
                             type="button"
                             className="btn-secondary is-compact"
                             disabled={interactiveBusy}
-                            onClick={async () => {
-                              const firstContentBlock =
-                                activePage.blocks.find((b) => b.kind !== "heading" && b.kind !== "image") ??
-                                activePage.blocks[0];
-                              const prompt = interactivePromptDraft.trim();
-                              setInteractiveMenuOpen(false);
-                              setInteractivePromptDraft("");
-                              await handleCreateInteractiveBlock({
-                                afterBlockId: firstContentBlock?.id ?? null,
-                                quote: firstContentBlock?.text.slice(0, 140),
-                                kind: "stepper",
-                                ...(prompt ? { prompt } : {}),
-                              });
-                            }}
+                            onClick={() => void createInteractiveFromTopbar("stepper")}
                           >
                             <ListChecks size={13} aria-hidden="true" />
                             <span>概念步進</span>
@@ -1385,6 +1482,17 @@ export default function App() {
                               <span>{refetching ? "重新擷取中…" : "重新擷取網頁原文"}</span>
                             </button>
                           </>
+                        ) : null}
+                        {pageToExplainHref ? (
+                          <a
+                            href={pageToExplainHref}
+                            className="more-menu-item"
+                            role="menuitem"
+                            onClick={() => setMoreMenuOpen(false)}
+                          >
+                            <AudioLines size={13} aria-hidden="true" />
+                            <span>送到 BELL Explain 深入理解</span>
+                          </a>
                         ) : null}
                         {pageToPersonalHref ? (
                           <a
@@ -1523,6 +1631,7 @@ export default function App() {
             </button>
           </div>
         ) : null}
+        </div>
 
         {(route.kind === "home" || route.kind === "handoff") && (
           <div className="workspace-container">
@@ -1848,31 +1957,7 @@ export default function App() {
                 </AnimatePresence>
 
                 {activeHasPdf && pdfViewMode === "pdf" ? (
-                  <section className="reader-pdf-pane is-solo" aria-label="PDF 原檔檢視">
-                    <div className="pdf-pane-bar">
-                      <span className="pdf-pane-title">
-                        <FileText size={13} aria-hidden="true" />
-                        <bdi>{activePage.title}</bdi>
-                        {activePage.pdfPageCount ? (
-                          <span className="pdf-page-count">{activePage.pdfPageCount} 頁</span>
-                        ) : null}
-                      </span>
-                      <a
-                        href={`/api/pages/${encodeURIComponent(activePage.id)}/pdf`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="pdf-pane-link"
-                      >
-                        <span>新分頁開啟</span>
-                        <ExternalLink size={12} aria-hidden="true" />
-                      </a>
-                    </div>
-                    <iframe
-                      className="reader-pdf-frame"
-                      src={`/api/pages/${encodeURIComponent(activePage.id)}/pdf`}
-                      title={`${activePage.title} PDF`}
-                    />
-                  </section>
+                  renderPdfPane(true)
                 ) : (
                   <div
                     ref={splitContainerRef}
@@ -1885,31 +1970,7 @@ export default function App() {
                   >
                     {activeHasPdf && pdfViewMode === "split" ? (
                       <>
-                        <section className="reader-pdf-pane" aria-label="PDF 原檔">
-                          <div className="pdf-pane-bar">
-                            <span className="pdf-pane-title">
-                              <FileText size={13} aria-hidden="true" />
-                              <bdi>{activePage.title}</bdi>
-                              {activePage.pdfPageCount ? (
-                                <span className="pdf-page-count">{activePage.pdfPageCount} 頁</span>
-                              ) : null}
-                            </span>
-                            <a
-                              href={`/api/pages/${encodeURIComponent(activePage.id)}/pdf`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="pdf-pane-link"
-                            >
-                              <span>新分頁</span>
-                              <ExternalLink size={12} aria-hidden="true" />
-                            </a>
-                          </div>
-                          <iframe
-                            className="reader-pdf-frame"
-                            src={`/api/pages/${encodeURIComponent(activePage.id)}/pdf`}
-                            title={`${activePage.title} PDF`}
-                          />
-                        </section>
+                        {renderPdfPane(false)}
 
                         <div
                           className="split-resizer"
@@ -2123,6 +2184,8 @@ export default function App() {
                                 className={`outline-item level-${h.level ?? 2}`}
                                 onClick={() => {
                                   setFocusRequest({ kind: "block", id: h.id, nonce: Date.now() });
+                                  const pageMatch = activeHasPdf ? h.text.trim().match(/^第\s*(\d+)\s*頁$/) : null;
+                                  if (pageMatch) jumpToPdfPage(Number(pageMatch[1]), false);
                                   if (window.matchMedia("(max-width: 900px)").matches) setOutlineOpen(false);
                                 }}
                               >
